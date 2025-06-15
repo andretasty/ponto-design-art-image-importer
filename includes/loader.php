@@ -11,6 +11,9 @@ if (!defined('ABSPATH')) {
 require_once ART_IMAGE_PLUGIN_DIR . 'admin/settings.php';
 require_once ART_IMAGE_PLUGIN_DIR . 'admin/admin-ui.php';
 
+// Post Types
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/post-types.php';
+
 // Importadores e utilidades
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/api-client.php';
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
@@ -24,4 +27,3 @@ add_action('init', function () {
 
     new ArtImageImporter();
 });
-

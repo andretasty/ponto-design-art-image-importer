@@ -38,12 +38,34 @@ function art_image_render_admin_page() {
     }
 
     if ($active_tab === 'manual_import') {
-        echo '<p>Botões para importar manualmente cada item, com log em tempo real.</p>';
+        echo '<div class="art-image-admin">';
+        echo '<p>Use os botões abaixo para importar dados manualmente. O log será exibido em tempo real.</p>';
+        
         echo '<div id="manual-import-section">';
-        echo '<button class="button" data-type="categories">Importar Categorias</button> ';
-        echo '<button class="button" data-type="products">Importar Produtos</button> ';
-        echo '<button class="button" data-type="artists">Importar Artistas</button>';
-        echo '<pre id="import-log" style="background: #111; color: #0f0; padding: 10px; margin-top: 15px; height: 300px; overflow: auto;"></pre>';
+        echo '<div class="import-buttons">';
+        echo '<button class="button" data-type="categories"><span class="status-indicator idle"></span>Importar Categorias</button>';
+        echo '<button class="button" data-type="subcategories"><span class="status-indicator idle"></span>Importar Subcategorias</button>';
+        echo '<button class="button button-primary" data-type="products"><span class="status-indicator idle"></span>Importar Produtos</button>';
+        echo '<button class="button" data-type="artists"><span class="status-indicator idle"></span>Importar Artistas</button>';
+        echo '</div>';
+        
+        echo '<div class="import-progress" id="import-progress">';
+        echo '<div class="progress-bar">';
+        echo '<div class="progress-fill" id="progress-fill">0%</div>';
+        echo '</div>';
+        echo '<div class="progress-stats">';
+        echo '<span id="progress-text">Aguardando início...</span>';
+        echo '<span id="progress-time"></span>';
+        echo '</div>';
+        echo '</div>';
+        
+        echo '<div class="import-actions">';
+        echo '<button class="button" id="clear-log">Limpar Log</button>';
+        echo '<button class="button" id="cancel-import" style="display:none;">Cancelar Importação</button>';
+        echo '</div>';
+        
+        echo '<pre id="import-log"></pre>';
+        echo '</div>';
         echo '</div>';
     }
 
@@ -59,6 +81,13 @@ add_action('admin_enqueue_scripts', function ($hook) {
         [],
         ART_IMAGE_VERSION,
         true
+    );
+
+    wp_enqueue_style(
+        'art-image-admin-style',
+        ART_IMAGE_PLUGIN_URL . 'admin/assets/css/admin-style.css',
+        [],
+        ART_IMAGE_VERSION
     );
 
     wp_localize_script('art-image-import-logs', 'art_image_ajax', [
