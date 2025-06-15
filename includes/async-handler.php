@@ -26,6 +26,9 @@ add_action('wp_ajax_art_image_manual_import', function () {
         case 'categories':
             $message = art_image_import_categories();
             break;
+        case 'subcategories':
+            $message = art_image_import_subcategories();
+            break;
         case 'products':
             $message = art_image_import_products();
             break;

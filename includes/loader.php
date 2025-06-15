@@ -21,4 +21,7 @@ require_once ART_IMAGE_PLUGIN_DIR . 'includes/cron.php';
 
 add_action('init', function () {
     do_action('art_image_plugin_loaded');
+
+    new ArtImageImporter();
 });
+

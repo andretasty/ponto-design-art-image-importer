@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', function () {
     buttons.forEach(button => {
         button.addEventListener('click', function () {
             const type = this.getAttribute('data-type');
-            appendLog(`Iniciando importação de ${type}...`);
+            appendLog(Iniciando importação de ${type}...);
 
             fetch(ajaxurl, {
                 method: 'POST',

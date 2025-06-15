@@ -146,4 +146,290 @@ class ArtImageApiClient
     {
         return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/108.0 Safari/537.36';
     }
+
+    // Busca as categorias no site
+
+    public function get_main_categories()
+    {
+        $cookies = $this->get_authenticated_cookies();
+        if (!$cookies) return [];
+
+        $cookie_header = $this->format_cookies($cookies);
+
+        $response = wp_remote_get('https://artimage.com.br/produtos/art-gallery', [
+            'headers' => ['Cookie' => $cookie_header],
+            'timeout' => 30,
+        ]);
+
+        if (is_wp_error($response)) return [];
+
+        $html = wp_remote_retrieve_body($response);
+
+        // Parse nav.sections
+        $categories = [];
+
+        if (preg_match('#<nav class="sections[^"]*">(.*?)</nav>#is', $html, $navMatch)) {
+            $navContent = $navMatch[1];
+            if (preg_match_all('#<a[^>]+href="([^"]+)"[^>]*>\s*<span>([^<]+)</span>#i', $navContent, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $match) {
+                    $url = trim($match[1]);
+                    $name = trim($match[2]);
+                    $slug = basename(parse_url($url, PHP_URL_PATH));
+                    $categories[] = [
+                        'nome' => $name,
+                        'slug' => $slug,
+                        'url'  => $url,
+                    ];
+                }
+            }
+        }
+
+        return $categories;
+    }
+
+    public function get_subcategories($main_category_url)
+    {
+        $cookies = $this->get_authenticated_cookies();
+        if (!$cookies) return [];
+
+        $cookie_header = $this->format_cookies($cookies);
+
+        $response = wp_remote_get($main_category_url, [
+            'headers' => ['Cookie' => $cookie_header],
+            'timeout' => 30,
+        ]);
+
+        if (is_wp_error($response)) return [];
+
+        $html = wp_remote_retrieve_body($response);
+
+        $subcategories = [];
+
+        if (preg_match_all('#<a[^>]+href="([^"]*filtro-sub=\d+)"[^>]*>\s*<span>([^<]+)</span>#i', $html, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $url = html_entity_decode($match[1]);
+                $name = trim($match[2]);
+                $slug = basename(parse_url($url, PHP_URL_PATH)) . '?' . parse_url($url, PHP_URL_QUERY);
+                $subcategories[] = [
+                    'nome' => $name,
+                    'slug' => $slug,
+                    'url'  => 'https://artimage.com.br' . $url,
+                ];
+            }
+        }
+
+        return $subcategories;
+    }
+
+    // Busca os produtos
+
+    public function get_products($subcategory_slug)
+    {
+        $cookies = $this->get_authenticated_cookies();
+        if (!$cookies) return [];
+
+        $cookie_header = $this->format_cookies($cookies);
+
+        $base_url = "https://artimage.com.br/produtos/{$subcategory_slug}?order=1&grid=mini&page=1";
+
+        // Pega a primeira página para descobrir o total de páginas
+        $response = wp_remote_get($base_url, [
+            'headers' => ['Cookie' => $cookie_header],
+            'timeout' => 30,
+        ]);
+
+        if (is_wp_error($response)) return [];
+
+        $html = wp_remote_retrieve_body($response);
+        $total_pages = 1;
+
+        if (preg_match_all('#data-ci-pagination-page="(\d+)"#i', $html, $matches)) {
+            $page_numbers = array_map('intval', $matches[1]);
+            $total_pages = max($page_numbers);
+        }
+
+        $products = [];
+
+        for ($page = 1; $page <= $total_pages; $page++) {
+            $url = "https://artimage.com.br/produtos/{$subcategory_slug}?order=1&grid=mini&page={$page}";
+
+            $response = wp_remote_get($url, [
+                'headers' => ['Cookie' => $cookie_header],
+                'timeout' => 30,
+            ]);
+
+            if (is_wp_error($response)) continue;
+
+            $html = wp_remote_retrieve_body($response);
+
+            if (preg_match_all('#<a href="([^"]+/produtos/detalhe/[^"]+)">.*?<span class="item-title">(.*?)</span>.*?<span class="item-price">(.*?)</span>.*?<span class="item-size">(.*?)</span>.*?<span class="item-code">(.*?)</span>#is', $html, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $match) {
+                    $products[] = [
+                        'link'  => html_entity_decode($match[1]),
+                        'title' => trim(strip_tags($match[2])),
+                        'price' => trim(strip_tags($match[3])),
+                        'size'  => trim(strip_tags($match[4])),
+                        'code'  => trim(strip_tags($match[5])),
+                    ];
+                }
+            }
+        }
+
+        return $products;
+    }
+
+    // Retorna detalhes do produto
+
+    public function get_product_details(string $product_url): array
+    {
+        $cookies = $this->get_authenticated_cookies();
+        if (!$cookies) {
+            return [];
+        }
+
+        $cookie_header = $this->format_cookies($cookies);
+
+        // 1. Busca a página do produto
+        $response = wp_remote_get($product_url, [
+            'headers' => ['Cookie' => $cookie_header],
+            'timeout' => 30,
+        ]);
+        if (is_wp_error($response)) {
+            return [];
+        }
+
+        $html = wp_remote_retrieve_body($response);
+        $details = [];
+
+        // 2. Título do produto
+        if (preg_match(
+            '#<h1[^>]+class="head-title"[^>]*>([^<]+)</h1>#i',
+            $html,
+            $match
+        )) {
+            $details['title'] = trim($match[1]);
+        }
+
+        // 3. Imagens (todas dentro de ovw-slick)
+        $details['images'] = [];
+        if (preg_match_all(
+            '#<img[^>]+class="ovw-image"[^>]+src="([^"]+)"#i',
+            $html,
+            $img_matches
+        )) {
+            foreach ($img_matches[1] as $src) {
+                $details['images'][] = html_entity_decode($src);
+            }
+        }
+
+        // 4. Artista
+        if (preg_match(
+            '#<h3>\s*Artista\s*</h3>.*?<b[^>]*>([^<]+)</b>#is',
+            $html,
+            $match
+        )) {
+            $details['artist'] = trim($match[1]);
+        }
+
+        // 5. Código (SKU)
+        if (preg_match(
+            '#<h3>\s*Código\s*</h3>.*?<p[^>]*class="sku"[^>]*>([^<]+)</p>#is',
+            $html,
+            $match
+        )) {
+            $details['code'] = trim($match[1]);
+        }
+
+        // 6. Técnica
+        if (preg_match(
+            '#<h3>\s*Técnica\s*</h3>.*?<p>([^<]+)</p>#is',
+            $html,
+            $match
+        )) {
+            $details['technique'] = trim($match[1]);
+        }
+
+        // 7. Moldura
+        if (preg_match(
+            '#<h3>\s*Moldura\s*</h3>.*?<p>([^<]+)</p>#is',
+            $html,
+            $match
+        )) {
+            $details['frame'] = trim($match[1]);
+        }
+
+        // 8. Descrição
+        if (preg_match(
+            '#<h3>\s*Descrição\s*</h3>.*?<div class="col-data">\s*(.*?)\s*</div>#is',
+            $html,
+            $match
+        )) {
+            $details['description'] = trim($match[1]);
+        }
+
+        // 9. Tamanho
+        if (preg_match(
+            '#<p[^>]+id="size"[^>]*>([^<]+)</p>#i',
+            $html,
+            $match
+        )) {
+            $details['size'] = trim($match[1]);
+        }
+
+        // 10. Preço
+        if (preg_match(
+            '#<p[^>]+id="price"[^>]*>([^<]+)</p>#i',
+            $html,
+            $match
+        )) {
+            $details['price'] = trim($match[1]);
+        }
+
+        return $details;
+    }
+
+    public function get_artists($artists_page_url): array
+    {
+        $cookies = $this->get_authenticated_cookies();
+        if (!$cookies) {
+            return [];
+        }
+
+        $cookie_header = $this->format_cookies($cookies);
+
+        $response = wp_remote_get($artists_page_url, [
+            'headers' => ['Cookie' => $cookie_header],
+            'timeout' => 30,
+        ]);
+        if (is_wp_error($response)) {
+            return [];
+        }
+
+        $html = wp_remote_retrieve_body($response);
+        $artists = [];
+
+        // Captura cada bloco .artt-item
+        if (preg_match_all(
+            '#<div\s+class="artt-item"[^>]*data-slug="([^"]+)"[^>]*>.*?<figure[^>]*>.*?<img\s+src="([^"]+)"[^>]*>.*?</figure>.*?<h2\s+class="artt-name">(.*?)</h2>.*?<div\s+class="artt-text">.*?<p>(.*?)</p>#is',
+            $html,
+            $matches,
+            PREG_SET_ORDER
+        )) {
+            foreach ($matches as $m) {
+                $slug        = trim($m[1]);
+                $image_url   = html_entity_decode($m[2]);
+                $title       = trim(strip_tags($m[3]));
+                $description = trim(strip_tags($m[4]));
+
+                $artists[] = [
+                    'slug'        => $slug,
+                    'image'       => $image_url,
+                    'title'       => $title,
+                    'description' => $description,
+                ];
+            }
+        }
+
+        return $artists;
+    }
 }
