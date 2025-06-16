@@ -23,85 +23,383 @@ class ArtImageImporter
     /**
      * Importa categorias principais para product_cat
      */
-    public function import_categories(): array
+    public function import_categories(int $page = 1, int $batch_size = 20): array
     {
-        if (get_transient('artimage_import_lock')) {
-            return ['Outro processo de importação já está em execução – abortando.'];
-        }
-        set_transient('artimage_import_lock', 1, 15 * MINUTE_IN_SECONDS);
-
         $logs = [];
-        $cats = $this->client->get_main_categories();
+        $processed_in_batch = 0;
+        $master_lock_key = 'artimage_master_import_lock';
+        $batch_lock_key = 'artimage_category_batch_lock';
+        $queue_key = 'artimage_category_import_queue';
+        $total_key = 'artimage_category_import_total';
+        $processed_key = 'artimage_category_processed_count';
+        $cancel_flag_key = 'artimage_cancel_category_import_flag';
 
-        foreach ($cats as $cat) {
-            $term = term_exists($cat['slug'], 'product_cat');
-            if (! $term) {
-                $result = wp_insert_term($cat['nome'], 'product_cat', [
-                    'slug' => $cat['slug'],
-                ]);
-                if (is_wp_error($result)) {
-                    $logs[] = "Erro ao criar categoria “{$cat['nome']}”: " . $result->get_error_message();
-                } else {
-                    $logs[] = "Categoria criada: {$cat['nome']}";
+        if ($page === 1) {
+            if (get_transient($master_lock_key)) {
+                return [
+                    'status' => 'error',
+                    'logs' => ['Outro processo de importação (master) já está em execução – abortando categorias.'],
+                    'has_more' => false,
+                ];
+            }
+            set_transient($master_lock_key, 'categories', 15 * MINUTE_IN_SECONDS); // Lock with type
+            set_transient($batch_lock_key, 1, 15 * MINUTE_IN_SECONDS);
+            delete_transient($cancel_flag_key); // Clear previous cancel flag
+
+            $all_cats_data = $this->client->get_main_categories();
+            if (empty($all_cats_data)) {
+                delete_transient($master_lock_key);
+                delete_transient($batch_lock_key);
+                $logs[] = "Nenhuma categoria principal encontrada para importar.";
+                return [
+                    'status' => 'completed',
+                    'logs' => $logs,
+                    'current_total_processed' => 0,
+                    'total_to_import' => 0,
+                    'has_more' => false,
+                ];
+            }
+
+            set_transient($queue_key, $all_cats_data, 1 * HOUR_IN_SECONDS);
+            set_transient($total_key, count($all_cats_data), 1 * HOUR_IN_SECONDS);
+            set_transient($processed_key, 0, 1 * HOUR_IN_SECONDS);
+            $logs[] = "Fila de importação de categorias preparada com " . count($all_cats_data) . " itens.";
+        } else {
+            if (!get_transient($batch_lock_key)) {
+                $current_master_holder = get_transient($master_lock_key);
+                if ($current_master_holder === 'categories') {
+                     delete_transient($master_lock_key); 
                 }
+                return [
+                    'status' => 'error',
+                    'logs' => ['Erro: Processo de importação de categorias em lote não iniciado ou bloqueio de lote expirou.'],
+                    'has_more' => false,
+                ];
+            }
+        }
+
+        if (get_transient($cancel_flag_key)) {
+            delete_transient($queue_key);
+            delete_transient($total_key);
+            delete_transient($processed_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'categories') {
+                delete_transient($master_lock_key);
+            }
+            delete_transient($cancel_flag_key);
+            $logs[] = "Importação de categorias cancelada pelo usuário.";
+            return ['status' => 'cancelled', 'logs' => $logs, 'has_more' => false];
+        }
+
+        $category_queue = get_transient($queue_key);
+        $total_to_import = (int) get_transient($total_key);
+        $current_total_processed = (int) get_transient($processed_key);
+
+        if ($category_queue === false || ($total_to_import === 0 && $page > 1)) {
+            if (get_transient($master_lock_key) === 'categories') {
+                delete_transient($master_lock_key);
+            }
+            delete_transient($batch_lock_key);
+            return [
+                'status' => 'error',
+                'logs' => ['Erro: Fila de importação de categorias não encontrada ou vazia inesperadamente.'],
+                'has_more' => false,
+            ];
+        }
+        
+        $offset = ($page - 1) * $batch_size;
+        $batch_items = array_slice((array)$category_queue, $offset, $batch_size);
+
+        if (empty($batch_items)) {
+            if ($current_total_processed >= $total_to_import) {
+                $logs[] = "Importação de categorias concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
+                delete_transient($queue_key);
+                delete_transient($total_key);
+                delete_transient($processed_key);
+                delete_transient($batch_lock_key);
+                if (get_transient($master_lock_key) === 'categories') {
+                    delete_transient($master_lock_key);
+                }
+                return [
+                    'status' => 'completed',
+                    'logs' => $logs,
+                    'current_total_processed' => $current_total_processed,
+                    'total_to_import' => $total_to_import,
+                    'has_more' => false,
+                ];
             } else {
-                $logs[] = "Categoria já existe: {$cat['nome']}";
+                $logs[] = "Lote de categorias vazio, mas a importação não foi concluída. Verificando...";
+                 if (get_transient($master_lock_key) === 'categories') {
+                    delete_transient($master_lock_key);
+                }
+                delete_transient($batch_lock_key);
+                return [
+                    'status' => 'error',
+                    'logs' => $logs,
+                    'current_total_processed' => $current_total_processed,
+                    'total_to_import' => $total_to_import,
+                    'has_more' => false,
+                ];
             }
         }
         
-        delete_transient('artimage_import_lock');
-        return $logs;
+        $logs[] = "Processando lote {$page} de categorias. Itens no lote: " . count($batch_items) . ". Processados anteriormente: {$current_total_processed} de {$total_to_import}.";
+
+        foreach ($batch_items as $cat_data) {
+            $term = term_exists($cat_data['slug'], 'product_cat');
+            if (!$term) {
+                $result = wp_insert_term($cat_data['nome'], 'product_cat', [
+                    'slug' => $cat_data['slug'],
+                ]);
+                if (is_wp_error($result)) {
+                    $logs[] = "Erro ao criar categoria “{$cat_data['nome']}”: " . $result->get_error_message();
+                } else {
+                    $logs[] = "Categoria criada: {$cat_data['nome']}";
+                }
+            } else {
+                $logs[] = "Categoria já existe: {$cat_data['nome']}";
+            }
+            $current_total_processed++;
+            $processed_in_batch++;
+        }
+
+        set_transient($processed_key, $current_total_processed, 1 * HOUR_IN_SECONDS);
+        $has_more = $current_total_processed < $total_to_import;
+
+        if (!$has_more) {
+            $logs[] = "Importação de categorias concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
+            delete_transient($queue_key);
+            delete_transient($total_key);
+            delete_transient($processed_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'categories') {
+                delete_transient($master_lock_key);
+            }
+        } else {
+            $logs[] = "Lote {$page} de categorias concluído. {$current_total_processed}/{$total_to_import} categorias processadas no total.";
+        }
+
+        return [
+            'status' => $has_more ? 'processing' : 'completed',
+            'logs' => $logs,
+            'processed_in_batch' => $processed_in_batch,
+            'current_total_processed' => $current_total_processed,
+            'total_to_import' => $total_to_import,
+            'has_more' => $has_more,
+            'next_page' => $page + 1
+        ];
     }
 
     /**
      * Importa subcategorias para product_cat, com parent
      */
-    public function import_subcategories(): array
+    public function import_subcategories(int $page = 1, int $batch_size = 20): array
     {
-        if (get_transient('artimage_import_lock')) {
-            return ['Outro processo de importação já está em execução – abortando.'];
-        }
-        set_transient('artimage_import_lock', 1, 15 * MINUTE_IN_SECONDS);
-
         $logs = [];
+        $processed_in_batch = 0;
+        $master_lock_key = 'artimage_master_import_lock';
+        $batch_lock_key = 'artimage_subcategory_batch_lock';
+        $queue_key = 'artimage_subcategory_import_queue';
+        $total_key = 'artimage_subcategory_import_total';
+        $processed_key = 'artimage_subcategory_processed_count';
+        $cancel_flag_key = 'artimage_cancel_subcategory_import_flag';
 
-        // Busca termos principais
-        $parents = get_terms([
-            'taxonomy'   => 'product_cat',
-            'hide_empty' => false,
-        ]);
+        if ($page === 1) {
+            if (get_transient($master_lock_key)) {
+                return [
+                    'status' => 'error',
+                    'logs' => ['Outro processo de importação (master) já está em execução – abortando subcategorias.'],
+                    'has_more' => false,
+                ];
+            }
+            set_transient($master_lock_key, 'subcategories', 15 * MINUTE_IN_SECONDS);
+            set_transient($batch_lock_key, 1, 15 * MINUTE_IN_SECONDS);
+            delete_transient($cancel_flag_key);
 
-        foreach ($parents as $parent) {
-            // monta URL de listagem de subcats
-            $url  = "https://artimage.com.br/produtos/{$parent->slug}";
-            $subs = $this->client->get_subcategories($url);
+            $logs[] = "Iniciando coleta de todas as subcategorias...";
+            $all_subcats_to_import = [];
+            $parent_categories = get_terms([
+                'taxonomy'   => 'product_cat',
+                'hide_empty' => false,
+                'parent'     => 0, 
+            ]);
 
-            foreach ($subs as $sub) {
-                $term = term_exists($sub['slug'], 'product_cat');
-                if (! $term) {
-                    $result = wp_insert_term($sub['nome'], 'product_cat', [
-                        'slug'   => $sub['slug'],
-                        'parent' => $parent->term_id,
-                    ]);
-                    if (is_wp_error($result)) {
-                        $logs[] = "Erro ao criar subcategoria “{$sub['nome']}”: " . $result->get_error_message();
-                    } else {
-                        $logs[] = "Subcategoria criada: {$sub['nome']} (pai: {$parent->name})";
+            if (is_wp_error($parent_categories)) {
+                delete_transient($master_lock_key);
+                delete_transient($batch_lock_key);
+                $logs[] = "Erro ao buscar categorias pai: " . $parent_categories->get_error_message();
+                return ['status' => 'error', 'logs' => $logs, 'has_more' => false];
+            }
+            if (empty($parent_categories)) {
+                 delete_transient($master_lock_key);
+                 delete_transient($batch_lock_key);
+                 $logs[] = "Nenhuma categoria pai encontrada para buscar subcategorias.";
+                 return ['status' => 'completed', 'logs' => $logs, 'current_total_processed' => 0, 'total_to_import' => 0, 'has_more' => false];
+            }
+
+            foreach ($parent_categories as $parent_cat) {
+                $url = "https://artimage.com.br/produtos/{$parent_cat->slug}";
+                $sub_data_from_api = $this->client->get_subcategories($url);
+                if (!empty($sub_data_from_api)) {
+                    foreach ($sub_data_from_api as $sub_item) {
+                        $all_subcats_to_import[] = [
+                            'nome' => $sub_item['nome'],
+                            'slug' => sanitize_title($sub_item['nome']), 
+                            'parent_id' => $parent_cat->term_id,
+                            'parent_name' => $parent_cat->name,
+                        ];
                     }
+                    $logs[] = "Coletadas " . count($sub_data_from_api) . " subcategorias de {$parent_cat->name}.";
                 } else {
-                    $logs[] = "Subcategoria já existe: {$sub['nome']}";
+                    $logs[] = "Nenhuma subcategoria encontrada para {$parent_cat->name} na API.";
                 }
+            }
+
+            if (empty($all_subcats_to_import)) {
+                delete_transient($master_lock_key);
+                delete_transient($batch_lock_key);
+                $logs[] = "Nenhuma subcategoria encontrada no total para importar.";
+                return [
+                    'status' => 'completed',
+                    'logs' => $logs,
+                    'current_total_processed' => 0,
+                    'total_to_import' => 0,
+                    'has_more' => false,
+                ];
+            }
+
+            set_transient($queue_key, $all_subcats_to_import, 1 * HOUR_IN_SECONDS);
+            set_transient($total_key, count($all_subcats_to_import), 1 * HOUR_IN_SECONDS);
+            set_transient($processed_key, 0, 1 * HOUR_IN_SECONDS);
+            $logs[] = "Fila de importação de subcategorias preparada com " . count($all_subcats_to_import) . " itens.";
+
+        } else {
+            if (!get_transient($batch_lock_key)) {
+                $current_master_holder = get_transient($master_lock_key);
+                if ($current_master_holder === 'subcategories') {
+                     delete_transient($master_lock_key);
+                }
+                return [
+                    'status' => 'error',
+                    'logs' => ['Erro: Processo de importação de subcategorias em lote não iniciado ou bloqueio de lote expirou.'],
+                    'has_more' => false,
+                ];
             }
         }
 
-        delete_transient('artimage_import_lock');
-        return $logs;
+        if (get_transient($cancel_flag_key)) {
+            delete_transient($queue_key);
+            delete_transient($total_key);
+            delete_transient($processed_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'subcategories') {
+                delete_transient($master_lock_key);
+            }
+            delete_transient($cancel_flag_key);
+            $logs[] = "Importação de subcategorias cancelada pelo usuário.";
+            return ['status' => 'cancelled', 'logs' => $logs, 'has_more' => false];
+        }
+
+        $subcategory_queue = get_transient($queue_key);
+        $total_to_import = (int) get_transient($total_key);
+        $current_total_processed = (int) get_transient($processed_key);
+
+        if ($subcategory_queue === false || ($total_to_import === 0 && $page > 1)) {
+             if (get_transient($master_lock_key) === 'subcategories') {
+                delete_transient($master_lock_key);
+            }
+            delete_transient($batch_lock_key);
+            return [
+                'status' => 'error',
+                'logs' => ['Erro: Fila de importação de subcategorias não encontrada ou vazia inesperadamente.'],
+                'has_more' => false,
+            ];
+        }
+
+        $offset = ($page - 1) * $batch_size;
+        $batch_items = array_slice((array)$subcategory_queue, $offset, $batch_size);
+
+        if (empty($batch_items)) {
+            if ($current_total_processed >= $total_to_import) {
+                $logs[] = "Importação de subcategorias concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
+                delete_transient($queue_key);
+                delete_transient($total_key);
+                delete_transient($processed_key);
+                delete_transient($batch_lock_key);
+                if (get_transient($master_lock_key) === 'subcategories') {
+                    delete_transient($master_lock_key);
+                }
+                return [
+                    'status' => 'completed',
+                    'logs' => $logs,
+                    'current_total_processed' => $current_total_processed,
+                    'total_to_import' => $total_to_import,
+                    'has_more' => false,
+                ];
+            } else {
+                $logs[] = "Lote de subcategorias vazio, mas a importação não foi concluída. Verificando...";
+                 if (get_transient($master_lock_key) === 'subcategories') {
+                    delete_transient($master_lock_key);
+                }
+                delete_transient($batch_lock_key);
+                return [
+                    'status' => 'error',
+                    'logs' => $logs,
+                    'current_total_processed' => $current_total_processed,
+                    'total_to_import' => $total_to_import,
+                    'has_more' => false,
+                ];
+            }
+        }
+
+        $logs[] = "Processando lote {$page} de subcategorias. Itens no lote: " . count($batch_items) . ". Processados anteriormente: {$current_total_processed} de {$total_to_import}.";
+
+        foreach ($batch_items as $sub_data) {
+            $term = term_exists($sub_data['slug'], 'product_cat');
+            if (!$term) {
+                $result = wp_insert_term($sub_data['nome'], 'product_cat', [
+                    'slug'   => $sub_data['slug'],
+                    'parent' => $sub_data['parent_id'],
+                ]);
+                if (is_wp_error($result)) {
+                    $logs[] = "Erro ao criar subcategoria “{$sub_data['nome']}” (pai: {$sub_data['parent_name']}): " . $result->get_error_message();
+                } else {
+                    $logs[] = "Subcategoria criada: {$sub_data['nome']} (pai: {$sub_data['parent_name']})";
+                }
+            } else {
+                $logs[] = "Subcategoria já existe: {$sub_data['nome']}";
+            }
+            $current_total_processed++;
+            $processed_in_batch++;
+        }
+
+        set_transient($processed_key, $current_total_processed, 1 * HOUR_IN_SECONDS);
+        $has_more = $current_total_processed < $total_to_import;
+
+        if (!$has_more) {
+            $logs[] = "Importação de subcategorias concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
+            delete_transient($queue_key);
+            delete_transient($total_key);
+            delete_transient($processed_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'subcategories') {
+                delete_transient($master_lock_key);
+            }
+        } else {
+            $logs[] = "Lote {$page} de subcategorias concluído. {$current_total_processed}/{$total_to_import} subcategorias processadas no total.";
+        }
+
+        return [
+            'status' => $has_more ? 'processing' : 'completed',
+            'logs' => $logs,
+            'processed_in_batch' => $processed_in_batch,
+            'current_total_processed' => $current_total_processed,
+            'total_to_import' => $total_to_import,
+            'has_more' => $has_more,
+            'next_page' => $page + 1
+        ];
     }
 
-    /**
-     * Prepara a fila de importação de produtos.
-     * Chamado pela primeira vez para construir a lista de todos os produtos.
-     */
     private function prepare_product_import_queue(): array
     {
         $logs = [];
@@ -110,18 +408,22 @@ class ArtImageImporter
         $subs = get_terms([
             'taxonomy'   => 'product_cat',
             'hide_empty' => false,
-            'fields'     => 'all', // Garante que temos term_id, slug, name, parent
+            'fields'     => 'all', 
         ]);
 
         if (is_wp_error($subs) || empty($subs)) {
-            return ['logs' => ["Nenhuma subcategoria encontrada para buscar produtos."], 'product_queue' => [], 'total_to_import' => 0];
+            $logs[] = "Nenhuma subcategoria encontrada para buscar produtos.";
+            // Ensure queue is empty and return that info
+            set_transient('artimage_product_import_queue', [], 1 * HOUR_IN_SECONDS);
+            set_transient('artimage_product_processed_count', 0, 1 * HOUR_IN_SECONDS);
+            return ['logs' => $logs, 'product_queue_count' => 0];
         }
 
         $logs[] = "Iniciando coleta de produtos de " . count($subs) . " subcategorias...";
 
         foreach ($subs as $sub) {
             $logs[] = "Coletando produtos da subcategoria: {$sub->name} ({$sub->slug})...";
-            $products_data = $this->client->get_products($sub->slug); // Assume que isso retorna um array de produtos
+            $products_data = $this->client->get_products($sub->slug); 
 
             if (empty($products_data)) {
                 $logs[] = "Nenhum produto encontrado para {$sub->name}.";
@@ -129,7 +431,6 @@ class ArtImageImporter
             }
 
             foreach ($products_data as $p_data) {
-                // Adiciona informações da subcategoria necessárias para o processamento posterior
                 $product_queue[] = [
                     'product_data' => $p_data,
                     'subcategory_id' => $sub->term_id,
@@ -138,154 +439,114 @@ class ArtImageImporter
             }
             $logs[] = "Coletados " . count($products_data) . " produtos de {$sub->name}.";
         }
-
-        $total_to_import = count($product_queue);
+        
         set_transient('artimage_product_import_queue', $product_queue, 1 * HOUR_IN_SECONDS);
-        set_transient('artimage_product_import_total', $total_to_import, 1 * HOUR_IN_SECONDS);
-        set_transient('artimage_product_processed_count', 0, 1 * HOUR_IN_SECONDS); // Inicializa o contador de processados
+        set_transient('artimage_product_processed_count', 0, 1 * HOUR_IN_SECONDS); 
 
-        $logs[] = "Total de {$total_to_import} produtos adicionados à fila de importação.";
-        return ['logs' => $logs, 'product_queue' => $product_queue, 'total_to_import' => $total_to_import];
+        $queue_count = count($product_queue);
+        if ($queue_count > 0) {
+            $logs[] = "{$queue_count} produtos adicionados à fila de importação.";
+        } else {
+            $logs[] = "Nenhum produto encontrado em nenhuma subcategoria para adicionar à fila.";
+        }
+        return ['logs' => $logs, 'product_queue_count' => $queue_count];
     }
 
-    /**
-     * Importa um lote de produtos do WooCommerce a partir da fila.
-     *
-     * @param int $page Número da página/lote atual.
-     * @param int $batch_size Quantidade de produtos por lote.
-     * @return array Detalhes do processamento do lote.
-     */
     public function import_products_batch(int $page = 1, int $batch_size = 5): array
     {
         $logs = [];
         $processed_in_batch = 0;
+        $master_lock_key = 'artimage_master_import_lock';
+        $batch_lock_key = 'artimage_product_batch_lock';
+        $cancel_flag_key = 'artimage_cancel_product_import_flag';
+        $queue_key = 'artimage_product_import_queue';
+        $processed_key = 'artimage_product_processed_count';
+        $total_key = 'artimage_product_import_total'; // Added total key for products
 
-        // Verifica o bloqueio de importação geral
-        if ($page === 1 && get_transient('artimage_import_lock')) {
-            return [
-                'status' => 'error',
-                'logs' => ['Outro processo de importação (não de produtos) já está em execução – abortando.'],
-                'processed_count' => 0,
-                'current_total_processed' => (int) get_transient('artimage_product_processed_count'),
-                'total_to_import' => (int) get_transient('artimage_product_import_total'),
-                'has_more' => false,
-                'next_page' => $page
-            ];
-        }
         if ($page === 1) {
-            // Define um bloqueio específico para a importação de produtos em lote
-            set_transient('artimage_product_batch_lock', 1, 15 * MINUTE_IN_SECONDS);
-            delete_transient('artimage_cancel_import_flag'); // Limpa flag de cancelamento anterior
-            
+            if (get_transient($master_lock_key)) {
+                return ['status' => 'error', 'logs' => ['Outro processo de importação (master) já está em execução – abortando produtos.'], 'has_more' => false];
+            }
+            set_transient($master_lock_key, 'products', 15 * MINUTE_IN_SECONDS);
+            set_transient($batch_lock_key, 1, 15 * MINUTE_IN_SECONDS);
+            delete_transient($cancel_flag_key);
+            delete_transient($total_key); // Clear previous total
+
+            $logs[] = "Iniciando preparação da fila de produtos. Isso pode levar algum tempo...";
             $preparation_result = $this->prepare_product_import_queue();
             $logs = array_merge($logs, $preparation_result['logs']);
-            // $product_queue = $preparation_result['product_queue']; // Não precisa aqui, será lido do transient
-            $total_to_import = $preparation_result['total_to_import'];
+            
+            set_transient($total_key, $preparation_result['product_queue_count'], 1 * HOUR_IN_SECONDS);
+            $logs[] = "Preparação da fila de produtos concluída. Total de produtos na fila para esta sessão: " . $preparation_result['product_queue_count'];
 
-            if ($total_to_import === 0) {
-                 delete_transient('artimage_product_batch_lock');
-                 $logs[] = "Nenhum produto encontrado na fila para importar.";
-                 return [
-                    'status' => 'completed',
-                    'logs' => $logs,
-                    'processed_count' => 0,
-                    'current_total_processed' => 0,
-                    'total_to_import' => 0,
-                    'has_more' => false,
-                    'next_page' => 1
-                ];
+            if ($preparation_result['product_queue_count'] === 0) {
+                 delete_transient($batch_lock_key);
+                 if (get_transient($master_lock_key) === 'products') {
+                    delete_transient($master_lock_key);
+                 }
+                 // $total_key is already deleted or set to 0
+                 $logs[] = "Nenhum produto encontrado na fila inicial para importar.";
+                 return ['status' => 'completed', 'logs' => $logs, 'current_total_processed' => 0, 'total_to_import' => 0, 'has_more' => false];
             }
         } else {
-            // Verifica se o bloqueio de lote de produtos ainda existe (ou seja, se o processo foi iniciado)
-            if (!get_transient('artimage_product_batch_lock')) {
-                return [
-                    'status' => 'error',
-                    'logs' => ['Erro: Processo de importação de produtos em lote não iniciado ou bloqueio expirou.'],
-                    'has_more' => false,
-                ];
+            if (!get_transient($batch_lock_key)) {
+                $current_master_holder = get_transient($master_lock_key);
+                if ($current_master_holder === 'products') {
+                     delete_transient($master_lock_key);
+                }
+                return ['status' => 'error', 'logs' => ['Erro: Processo de importação de produtos em lote não iniciado ou bloqueio de lote expirou.'], 'has_more' => false];
             }
         }
         
-        // Lê a fila e totais dos transientes em todas as chamadas de lote
-        $product_queue = get_transient('artimage_product_import_queue');
-        $total_to_import = (int) get_transient('artimage_product_import_total');
-
-        if ($product_queue === false || $total_to_import === 0 && $page > 1) {
-             delete_transient('artimage_product_batch_lock');
-             return [
-                'status' => 'error',
-                'logs' => ['Erro: Fila de importação de produtos não encontrada ou vazia inesperadamente.'],
-                'has_more' => false,
-            ];
-        }
-        if (empty($product_queue) && $page === 1 && $total_to_import === 0) {
-            // Caso especial: prepare_product_import_queue não encontrou nada e já retornou.
-            // Este bloco é para segurança, mas o retorno de prepare_product_import_queue já deve ter tratado.
-             delete_transient('artimage_product_batch_lock');
-             return [
-                'status' => 'completed',
-                'logs' => $logs, // $logs da preparação
-                'has_more' => false,
-            ];
-        }
-
-
-        // Verifica flag de cancelamento
-        if (get_transient('artimage_cancel_import_flag')) {
-            delete_transient('artimage_product_batch_lock');
-            delete_transient('artimage_product_import_queue');
-            delete_transient('artimage_product_import_total');
-            delete_transient('artimage_product_processed_count');
-            delete_transient('artimage_cancel_import_flag'); // Limpa a própria flag
+        if (get_transient($cancel_flag_key)) {
+            delete_transient($queue_key);
+            delete_transient($processed_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'products') {
+                delete_transient($master_lock_key);
+            }
+            delete_transient($cancel_flag_key);
             $logs[] = "Importação de produtos cancelada pelo usuário.";
-            return [
-                'status' => 'cancelled',
-                'logs' => $logs,
-                'has_more' => false,
-            ];
+            return ['status' => 'cancelled', 'logs' => $logs, 'has_more' => false];
         }
 
-        $current_total_processed = (int) get_transient('artimage_product_processed_count');
-        // O offset é relativo ao início da fila original, não ao que resta.
-        $offset = ($page - 1) * $batch_size;
+        $product_queue = get_transient($queue_key);
+        $current_total_processed = (int) get_transient($processed_key);
+        $total_to_import = (int) get_transient($total_key); // Retrieve total
+
+        if ($product_queue === false && $page > 1) {
+             if (get_transient($master_lock_key) === 'products') {
+                delete_transient($master_lock_key);
+             }
+             delete_transient($batch_lock_key);
+             return ['status' => 'error', 'logs' => ['Erro: Fila de importação de produtos não encontrada para processamento em lote (página > 1).'], 'total_to_import' => $total_to_import, 'has_more' => false];
+        }
         
-        // Pegamos o lote da fila completa
+        $offset = ($page - 1) * $batch_size;
         $batch_items = array_slice((array)$product_queue, $offset, $batch_size);
 
         if (empty($batch_items)) {
-            // Se não há mais itens E o total processado é igual ou maior que o total a importar, então está completo.
-            if ($current_total_processed >= $total_to_import) {
-                delete_transient('artimage_product_batch_lock');
-                delete_transient('artimage_product_import_queue');
-                delete_transient('artimage_product_import_total');
-                delete_transient('artimage_product_processed_count');
-                $logs[] = "Importação de produtos concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
-                 return [
-                    'status' => 'completed',
-                    'logs' => $logs,
-                    'current_total_processed' => $current_total_processed,
-                    'total_to_import' => $total_to_import,
-                    'has_more' => false,
-                ];
-            } else {
-                // Lote vazio, mas não terminou - pode ser um erro ou fim da fila antes do esperado.
-                // Se a fila original ($product_queue) já foi totalmente processada pelo array_slice e $offset
-                // e $current_total_processed < $total_to_import, isso indica um problema.
-                // No entanto, o `array_slice` em uma fila já processada retornará vazio.
-                // A condição principal é $current_total_processed < $total_to_import
-                $logs[] = "Nenhum item restante na fila para o lote {$page}, mas a importação não foi marcada como concluída. Verificando...";
-                 delete_transient('artimage_product_batch_lock'); // Limpar bloqueio em caso de erro
-                 return [
-                    'status' => 'error',
-                    'logs' => $logs,
-                    'current_total_processed' => $current_total_processed,
-                    'total_to_import' => $total_to_import,
-                    'has_more' => false,
-                ];
+            $logs[] = "Importação de produtos concluída. Total processado nesta sessão: {$current_total_processed} de {$total_to_import}.";
+            
+            // Limpar transients da importação de produtos
+            delete_transient($queue_key);
+            delete_transient($processed_key);
+            delete_transient($total_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'products') {
+                delete_transient($master_lock_key);
             }
+            
+            return [
+                'status' => 'completed',
+                'logs' => $logs,
+                'current_total_processed' => $current_total_processed,
+                'total_to_import' => $total_to_import,
+                'has_more' => false,
+            ];
         }
         
-        $logs[] = "Processando lote {$page}. Itens no lote: " . count($batch_items) . ". Processados anteriormente: {$current_total_processed} de {$total_to_import}.";
+        $logs[] = "Processando lote {$page} de produtos. Itens no lote: " . count($batch_items) . ". Processados nesta sessão: {$current_total_processed} de {$total_to_import} (aprox.).";
 
         foreach ($batch_items as $item_to_process) {
             $p = $item_to_process['product_data'];
@@ -312,36 +573,67 @@ class ArtImageImporter
                     }
                     update_post_meta($prod_id, '_external_link', esc_url_raw($p['link']));
                     update_post_meta($prod_id, '_size', sanitize_text_field($p['size']));
+
+                    // Buscar detalhes do produto para obter o nome do artista se necessário
+                    if (empty($p['artist_name']) && !empty($p['link'])) {
+                        $product_details = $this->client->get_product_details($p['link']);
+                        if (!empty($product_details['artist'])) {
+                            $p['artist_name'] = $product_details['artist'];
+                        }
+                    }
+
+                    if (!empty($p['artist_name'])) {
+                        $artist_name_to_find = sanitize_text_field($p['artist_name']);
+                        $artist_term = term_exists($artist_name_to_find, 'artist');
+                        if ($artist_term) {
+                            $artist_term_id = is_array($artist_term) ? $artist_term['term_id'] : $artist_term;
+                            wp_set_object_terms($prod_id, (int)$artist_term_id, 'artist', true);
+                            $logs[] = "Produto ID {$prod_id} ('{$p['title']}') associado ao artista: {$artist_name_to_find} (ID {$artist_term_id}).";
+                        } else {
+                            $logs[] = "Artista '{$artist_name_to_find}' não encontrado para o produto ID {$prod_id} ('{$p['title']}').";
+                        }
+                    }
+
                     $logs[] = "Produto criado: {$p['title']} (ID {$prod_id})";
                 } else {
                     $error_message = is_wp_error($prod_id) ? $prod_id->get_error_message() : 'Erro desconhecido ao salvar produto.';
                     $logs[] = "Erro ao criar produto “{$p['title']}”: " . $error_message;
                 }
             }
-            $current_total_processed++; // Incrementa para cada item tentado no lote
+            $current_total_processed++; 
             $processed_in_batch++;
         }
         
-        set_transient('artimage_product_processed_count', $current_total_processed, 1 * HOUR_IN_SECONDS);
-        $has_more = $current_total_processed < $total_to_import;
+        set_transient($processed_key, $current_total_processed, 1 * HOUR_IN_SECONDS);
+        
+        $next_batch_start_index = $page * $batch_size;
+        $has_more_in_current_queue = count((array)$product_queue) > $next_batch_start_index;
 
-        if (!$has_more) {
-            $logs[] = "Importação de produtos concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
-            delete_transient('artimage_product_batch_lock');
-            delete_transient('artimage_product_import_queue');
-            delete_transient('artimage_product_import_total');
-            delete_transient('artimage_product_processed_count');
+        $current_status = 'processing';
+        if (!$has_more_in_current_queue) {
+            // Sempre marcar como concluído quando não há mais itens na fila atual
+            $logs[] = "Importação de produtos concluída. Total processado nesta sessão: {$current_total_processed} de {$total_to_import}.";
+            $current_status = 'completed';
+            
+            // Limpar transients da importação de produtos
+            delete_transient($queue_key);
+            delete_transient($processed_key);
+            delete_transient($total_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'products') {
+                delete_transient($master_lock_key);
+            }
         } else {
-            $logs[] = "Lote {$page} concluído. {$current_total_processed}/{$total_to_import} produtos processados no total.";
+            $logs[] = "Lote {$page} de produtos concluído. Processados nesta sessão: {$current_total_processed} de {$total_to_import}.";
         }
 
         return [
-            'status' => $has_more ? 'processing' : ($current_total_processed >= $total_to_import ? 'completed' : 'error'),
+            'status' => $current_status,
             'logs' => $logs,
-            'processed_in_batch' => $processed_in_batch, // Renomeado de processed_count para clareza
+            'processed_in_batch' => $processed_in_batch,
             'current_total_processed' => $current_total_processed,
-            'total_to_import' => $total_to_import,
-            'has_more' => $has_more,
+            'total_to_import' => $total_to_import, // Added total_to_import
+            'has_more' => $has_more_in_current_queue,
             'next_page' => $page + 1
         ];
     }
@@ -349,80 +641,261 @@ class ArtImageImporter
     /**
      * Importa artistas para CPT 'artists'
      */
-    public function import_artists(): array
+    public function import_artists(int $page = 1, int $batch_size = 20): array
     {
-        if (get_transient('artimage_import_lock')) {
-            return ['Outro processo de importação já está em execução – abortando.'];
-        }
-        set_transient('artimage_import_lock', 1, 15 * MINUTE_IN_SECONDS);
+        $logs = [];
+        $processed_in_batch = 0;
+        $master_lock_key = 'artimage_master_import_lock';
+        $batch_lock_key = 'artimage_artist_batch_lock';
+        $queue_key = 'artimage_artist_import_queue';
+        $total_key = 'artimage_artist_import_total';
+        $processed_key = 'artimage_artist_processed_count';
+        $cancel_flag_key = 'artimage_cancel_artist_import_flag';
 
-        $logs    = [];
-        $artists = $this->client->get_artists('https://artimage.com.br/artistas');
+        if ($page === 1) {
+            if (get_transient($master_lock_key)) {
+                return [
+                    'status' => 'error',
+                    'logs' => ['Outro processo de importação (master) já está em execução – abortando artistas.'],
+                    'has_more' => false,
+                ];
+            }
+            set_transient($master_lock_key, 'artists', 15 * MINUTE_IN_SECONDS);
+            set_transient($batch_lock_key, 1, 15 * MINUTE_IN_SECONDS);
+            delete_transient($cancel_flag_key);
 
-        foreach ($artists as $a) {
-            // busca por slug externo
-            $existing = get_posts([
-                'post_type'  => 'artists',
-                'meta_key'   => '_external_slug',
-                'meta_value' => $a['slug'],
-                'fields'     => 'ids',
-            ]);
-
-            if ($existing) {
-                $logs[] = "Artista já existe: {$a['title']}";
-                continue;
+            $all_artists_data = $this->client->get_artists('https://artimage.com.br/artistas');
+            if (empty($all_artists_data)) {
+                delete_transient($master_lock_key);
+                delete_transient($batch_lock_key);
+                $logs[] = "Nenhum artista encontrado para importar.";
+                return [
+                    'status' => 'completed',
+                    'logs' => $logs,
+                    'current_total_processed' => 0,
+                    'total_to_import' => 0,
+                    'has_more' => false,
+                ];
             }
 
-            // cria post type artists
-            $post_id = wp_insert_post([
-                'post_type'    => 'artists',
-                'post_title'   => $a['title'],
-                'post_content' => $a['description'],
-                'post_status'  => 'publish',
-            ]);
-
-            if (is_wp_error($post_id)) {
-                $logs[] = "Erro ao criar artista {$a['title']}: " . $post_id->get_error_message();
-                continue;
+            set_transient($queue_key, $all_artists_data, 1 * HOUR_IN_SECONDS);
+            set_transient($total_key, count($all_artists_data), 1 * HOUR_IN_SECONDS);
+            set_transient($processed_key, 0, 1 * HOUR_IN_SECONDS);
+            $logs[] = "Fila de importação de artistas preparada com " . count($all_artists_data) . " itens.";
+        } else {
+            if (!get_transient($batch_lock_key)) {
+                $current_master_holder = get_transient($master_lock_key);
+                if ($current_master_holder === 'artists') {
+                     delete_transient($master_lock_key);
+                }
+                return [
+                    'status' => 'error',
+                    'logs' => ['Erro: Processo de importação de artistas em lote não iniciado ou bloqueio de lote expirou.'],
+                    'has_more' => false,
+                ];
             }
-
-            // metadados
-            update_post_meta($post_id, '_external_slug', $a['slug']);
-            update_post_meta($post_id, '_image_url',     $a['image']);
-
-            $logs[] = "Artista criado: {$a['title']} (ID {$post_id})";
         }
 
-        delete_transient('artimage_import_lock');
-        return $logs;
+        if (get_transient($cancel_flag_key)) {
+            delete_transient($queue_key);
+            delete_transient($total_key);
+            delete_transient($processed_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'artists') {
+                delete_transient($master_lock_key);
+            }
+            delete_transient($cancel_flag_key);
+            $logs[] = "Importação de artistas cancelada pelo usuário.";
+            return ['status' => 'cancelled', 'logs' => $logs, 'has_more' => false];
+        }
+
+        $artist_queue = get_transient($queue_key);
+        $total_to_import = (int) get_transient($total_key);
+        $current_total_processed = (int) get_transient($processed_key);
+
+        if ($artist_queue === false || ($total_to_import === 0 && $page > 1)) {
+            if (get_transient($master_lock_key) === 'artists') {
+                delete_transient($master_lock_key);
+            }
+            delete_transient($batch_lock_key);
+            return [
+                'status' => 'error',
+                'logs' => ['Erro: Fila de importação de artistas não encontrada ou vazia inesperadamente.'],
+                'has_more' => false,
+            ];
+        }
+        
+        $offset = ($page - 1) * $batch_size;
+        $batch_items = array_slice((array)$artist_queue, $offset, $batch_size);
+
+        if (empty($batch_items)) {
+            if ($current_total_processed >= $total_to_import) {
+                $logs[] = "Importação de artistas concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
+                delete_transient($queue_key);
+                delete_transient($total_key);
+                delete_transient($processed_key);
+                delete_transient($batch_lock_key);
+                if (get_transient($master_lock_key) === 'artists') {
+                    delete_transient($master_lock_key);
+                }
+                return [
+                    'status' => 'completed',
+                    'logs' => $logs,
+                    'current_total_processed' => $current_total_processed,
+                    'total_to_import' => $total_to_import,
+                    'has_more' => false,
+                ];
+            } else {
+                $logs[] = "Lote de artistas vazio, mas a importação não foi concluída. Verificando...";
+                if (get_transient($master_lock_key) === 'artists') {
+                    delete_transient($master_lock_key);
+                }
+                delete_transient($batch_lock_key);
+                return [
+                    'status' => 'error',
+                    'logs' => $logs,
+                    'current_total_processed' => $current_total_processed,
+                    'total_to_import' => $total_to_import,
+                    'has_more' => false,
+                ];
+            }
+        }
+        
+        $logs[] = "Processando lote {$page} de artistas. Itens no lote: " . count($batch_items) . ". Processados anteriormente: {$current_total_processed} de {$total_to_import}.";
+
+        foreach ($batch_items as $a) {
+            $slug_to_check = sanitize_title($a['title']);
+            $term_exists = term_exists($slug_to_check, 'artist'); 
+
+            if ($term_exists) {
+                $term_id = is_array($term_exists) ? $term_exists['term_id'] : $term_exists;
+                $updated_term = wp_update_term($term_id, 'artist', [
+                    'name'        => $a['title'],
+                    'description' => $a['description'],
+                    'slug'        => $slug_to_check,
+                ]);
+
+                if (is_wp_error($updated_term)) {
+                    $logs[] = "Erro ao atualizar artista (termo) {$a['title']} (ID {$term_id}): " . $updated_term->get_error_message();
+                } else {
+                    update_term_meta($term_id, '_external_slug', $a['slug']); 
+                    update_term_meta($term_id, '_image_url', $a['image']);
+                    $logs[] = "Artista (termo) atualizado: {$a['title']} (ID {$term_id}).";
+                }
+            } else {
+                $term_data = wp_insert_term(
+                    $a['title'],
+                    'artist',
+                    [
+                        'description' => $a['description'],
+                        'slug'        => $slug_to_check,
+                    ]
+                );
+
+                if (is_wp_error($term_data)) {
+                    $logs[] = "Erro ao criar artista (termo) {$a['title']}: " . $term_data->get_error_message();
+                } else {
+                    $term_id = $term_data['term_id'];
+                    update_term_meta($term_id, '_external_slug', $a['slug']); 
+                    update_term_meta($term_id, '_image_url', $a['image']);
+                    $logs[] = "Artista (termo) criado: {$a['title']} (ID {$term_id})";
+                }
+            }
+            $current_total_processed++;
+            $processed_in_batch++;
+        }
+
+        set_transient($processed_key, $current_total_processed, 1 * HOUR_IN_SECONDS);
+        $has_more = $current_total_processed < $total_to_import;
+
+        if (!$has_more) {
+            $logs[] = "Importação de artistas concluída. Total processado: {$current_total_processed} de {$total_to_import}.";
+            delete_transient($queue_key);
+            delete_transient($total_key);
+            delete_transient($processed_key);
+            delete_transient($batch_lock_key);
+            if (get_transient($master_lock_key) === 'artists') {
+                delete_transient($master_lock_key);
+            }
+        } else {
+            $logs[] = "Lote {$page} de artistas concluído. {$current_total_processed}/{$total_to_import} artistas processados no total.";
+        }
+
+        return [
+            'status' => $has_more ? 'processing' : 'completed',
+            'logs' => $logs,
+            'processed_in_batch' => $processed_in_batch,
+            'current_total_processed' => $current_total_processed,
+            'total_to_import' => $total_to_import,
+            'has_more' => $has_more,
+            'next_page' => $page + 1
+        ];
     }
 
     // --- AJAX wrappers ---
 
     public function ajax_import_categories()
     {
-        wp_send_json_success($this->import_categories());
+        $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
+        $result = $this->import_categories($page);
+        wp_send_json_success($result);
     }
 
     public function ajax_import_subcategories()
     {
-        wp_send_json_success($this->import_subcategories());
+        $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
+        $result = $this->import_subcategories($page);
+        wp_send_json_success($result);
     }
 
     public function ajax_import_products()
     {
-        // O nonce e a permissão já foram verificados em async-handler.php
         $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
-        // Permite filtrar o tamanho do lote, default 5.
-        // Pequenos lotes são melhores para evitar timeouts e para feedback mais rápido.
-        $batch_size = apply_filters('art_image_product_import_batch_size', 5);
-
+        $batch_size = apply_filters('art_image_product_import_batch_size', 5); 
         $result = $this->import_products_batch($page, $batch_size);
-        wp_send_json_success($result); // Envia o array estruturado diretamente
+        wp_send_json_success($result);
     }
 
     public function ajax_import_artists()
     {
-        wp_send_json_success($this->import_artists());
+        $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
+        $result = $this->import_artists($page);
+        wp_send_json_success($result);
+    }
+
+    // --- AJAX Cancellation Handlers ---
+
+    public function ajax_cancel_categories_import() {
+        set_transient('artimage_cancel_category_import_flag', true, 1 * HOUR_IN_SECONDS);
+        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de categorias recebida.']);
+    }
+
+    public function ajax_cancel_subcategories_import() {
+        set_transient('artimage_cancel_subcategory_import_flag', true, 1 * HOUR_IN_SECONDS);
+        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de subcategorias recebida.']);
+    }
+
+    public function ajax_cancel_artists_import() {
+        set_transient('artimage_cancel_artist_import_flag', true, 1 * HOUR_IN_SECONDS);
+        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de artistas recebida.']);
+    }
+
+    public function ajax_cancel_products_import() {
+        set_transient('artimage_cancel_product_import_flag', true, 1 * HOUR_IN_SECONDS);
+        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de produtos recebida.']);
+    }
+
+    /**
+     * Checks the master lock transient to see if any import is active.
+     * @return string|false The type of import active, or false if none.
+     */
+    public function get_active_import_status() {
+        $master_lock_key = 'artimage_master_import_lock';
+        $active_import_type = get_transient($master_lock_key);
+        
+        if ($active_import_type) {
+            return $active_import_type;
+        }
+        return false;
     }
 }

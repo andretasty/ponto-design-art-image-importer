@@ -265,11 +265,12 @@ class ArtImageApiClient
             if (preg_match_all('#<a href="([^"]+/produtos/detalhe/[^"]+)">.*?<span class="item-title">(.*?)</span>.*?<span class="item-price">(.*?)</span>.*?<span class="item-size">(.*?)</span>.*?<span class="item-code">(.*?)</span>#is', $html, $matches, PREG_SET_ORDER)) {
                 foreach ($matches as $match) {
                     $products[] = [
-                        'link'  => html_entity_decode($match[1]),
-                        'title' => trim(strip_tags($match[2])),
-                        'price' => trim(strip_tags($match[3])),
-                        'size'  => trim(strip_tags($match[4])),
-                        'code'  => trim(strip_tags($match[5])),
+                        'link'        => html_entity_decode($match[1]),
+                        'title'       => trim(strip_tags($match[2])),
+                        'price'       => trim(strip_tags($match[3])),
+                        'size'        => trim(strip_tags($match[4])),
+                        'code'        => trim(strip_tags($match[5])),
+                        'artist_name' => '', // Será preenchido durante a importação se necessário
                     ];
                 }
             }

@@ -65,8 +65,14 @@ function art_image_render_admin_page() {
         echo '</div>';
         
         echo '<pre id="import-log"></pre>';
+        echo '</div>'; // End #manual-import-section
+
+        echo '<div id="active-imports-section" style="margin-top: 20px;">';
+        echo '<h3>Processos de Importação em Andamento</h3>';
+        echo '<div id="active-imports-list">Nenhum processo em andamento no momento.</div>';
         echo '</div>';
-        echo '</div>';
+
+        echo '</div>'; // End .art-image-admin
     }
 
     echo '</div>';

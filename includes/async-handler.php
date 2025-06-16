@@ -7,86 +7,118 @@ if (!defined('ABSPATH')) {
  * Manipuladores AJAX para importações manuais
  */
 
-// Hook para conectar todos os handlers AJAX
-add_action('wp_ajax_art_image_manual_import', 'art_image_handle_manual_import');
-add_action('wp_ajax_art_image_batch_import', 'art_image_handle_batch_import');
-add_action('wp_ajax_art_image_cancel_import', 'art_image_handle_cancel_import');
+// Hook para conectar todos os handlers AJAX - Refatorado para batch
+add_action('wp_ajax_art_image_import_categories', 'art_image_handle_categories_import');
+add_action('wp_ajax_art_image_import_subcategories', 'art_image_handle_subcategories_import');
+add_action('wp_ajax_art_image_import_artists', 'art_image_handle_artists_import');
+add_action('wp_ajax_art_image_import_products', 'art_image_handle_products_import'); // Renomeado
 
-/**
- * Handler principal para importações simples
- */
-function art_image_handle_manual_import() {
+add_action('wp_ajax_art_image_cancel_categories_import', 'art_image_handle_cancel_categories_import');
+add_action('wp_ajax_art_image_cancel_subcategories_import', 'art_image_handle_cancel_subcategories_import');
+add_action('wp_ajax_art_image_cancel_artists_import', 'art_image_handle_cancel_artists_import');
+add_action('wp_ajax_art_image_cancel_products_import', 'art_image_handle_cancel_products_import');
+add_action('wp_ajax_art_image_get_active_imports', 'art_image_handle_get_active_imports');
+
+
+function art_image_handle_get_active_imports() {
     check_ajax_referer('art_image_nonce');
-
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Permissão negada.']);
     }
-
-    $type = sanitize_text_field($_POST['type'] ?? '');
-
-    if (!in_array($type, ['categories', 'subcategories', 'artists'])) {
-        wp_send_json_error(['message' => 'Tipo de importação inválido.']);
-    }
-
     require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
     $importer = new ArtImageImporter();
-
-    switch ($type) {
-        case 'categories':
-            $result = $importer->import_categories();
-            wp_send_json_success($result);
-            break;
-            
-        case 'subcategories':
-            $result = $importer->import_subcategories();
-            wp_send_json_success($result);
-            break;
-            
-        case 'artists':
-            $result = $importer->import_artists();
-            wp_send_json_success($result);
-            break;
-    }
+    $active_import = $importer->get_active_import_status();
+    wp_send_json_success(['active_import_type' => $active_import]);
 }
 
-/**
- * Handler para importação em lotes (produtos)
- */
-function art_image_handle_batch_import() {
+function art_image_handle_categories_import() {
     check_ajax_referer('art_image_nonce');
-
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Permissão negada.']);
     }
-
-    $type = sanitize_text_field($_POST['type'] ?? '');
-    $page = absint($_POST['page'] ?? 1);
-
-    if ($type !== 'products') {
-        wp_send_json_error(['message' => 'Tipo de importação em lote inválido.']);
-    }
-
     require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
     $importer = new ArtImageImporter();
-
-    $batch_size = apply_filters('art_image_product_import_batch_size', 5);
-    $result = $importer->import_products_batch($page, $batch_size);
-    
+    $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
+    $result = $importer->import_categories($page); // Batch size is defaulted in the method
     wp_send_json_success($result);
 }
 
-/**
- * Handler para cancelar importação
- */
-function art_image_handle_cancel_import() {
+function art_image_handle_subcategories_import() {
     check_ajax_referer('art_image_nonce');
-
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Permissão negada.']);
     }
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    $importer = new ArtImageImporter();
+    $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
+    $result = $importer->import_subcategories($page); // Batch size is defaulted
+    wp_send_json_success($result);
+}
 
-    // Define flag de cancelamento
-    set_transient('artimage_cancel_import_flag', 1, 5 * MINUTE_IN_SECONDS);
-    
-    wp_send_json_success(['message' => 'Solicitação de cancelamento processada.']);
+function art_image_handle_artists_import() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    $importer = new ArtImageImporter();
+    $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
+    $result = $importer->import_artists($page); // Batch size is defaulted
+    wp_send_json_success($result);
+}
+
+function art_image_handle_products_import() { // Renamed from art_image_handle_batch_import
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    $importer = new ArtImageImporter();
+    $page = isset($_POST['page']) ? absint($_POST['page']) : 1;
+    // Batch size is handled within import_products_batch (default 5, filterable)
+    $batch_size = apply_filters('art_image_product_import_batch_size', 5);
+    $result = $importer->import_products_batch($page, $batch_size);
+    wp_send_json_success($result);
+}
+
+
+// Cancellation Handlers
+function art_image_handle_cancel_categories_import() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    $importer = new ArtImageImporter();
+    $importer->ajax_cancel_categories_import(); // This method now exists in importer.php
+}
+
+function art_image_handle_cancel_subcategories_import() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    $importer = new ArtImageImporter();
+    $importer->ajax_cancel_subcategories_import();
+}
+
+function art_image_handle_cancel_artists_import() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    $importer = new ArtImageImporter();
+    $importer->ajax_cancel_artists_import();
+}
+
+function art_image_handle_cancel_products_import() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    $importer = new ArtImageImporter();
+    $importer->ajax_cancel_products_import();
 }

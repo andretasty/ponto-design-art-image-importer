@@ -8,32 +8,30 @@ if (!defined('ABSPATH')) {
  */
 
 add_action('init', function () {
-    register_post_type('artists', [
-        'labels' => [
-            'name'               => 'Artistas',
-            'singular_name'      => 'Artista',
-            'menu_name'          => 'Artistas',
-            'add_new'            => 'Adicionar Novo',
-            'add_new_item'       => 'Adicionar Novo Artista',
-            'edit_item'          => 'Editar Artista',
-            'new_item'           => 'Novo Artista',
-            'view_item'          => 'Ver Artista',
-            'search_items'       => 'Buscar Artistas',
-            'not_found'          => 'Nenhum artista encontrado',
-            'not_found_in_trash' => 'Nenhum artista encontrado na lixeira',
-        ],
-        'public'              => true,
-        'publicly_queryable'  => true,
-        'show_ui'             => true,
-        'show_in_menu'        => true,
-        'query_var'           => true,
-        'rewrite'             => ['slug' => 'artista'],
-        'capability_type'     => 'post',
-        'has_archive'         => true,
-        'hierarchical'        => false,
-        'menu_position'       => 25,
-        'menu_icon'           => 'dashicons-admin-users',
-        'supports'            => ['title', 'editor', 'thumbnail'],
-        'show_in_rest'        => true, // Para Gutenberg
-    ]);
+    // Register Custom Taxonomy for Artists
+    $labels = [
+        'name'              => _x('Artistas', 'taxonomy general name', 'ponto-design-art-image-importer'),
+        'singular_name'     => _x('Artista', 'taxonomy singular name', 'ponto-design-art-image-importer'),
+        'search_items'      => __('Buscar Artistas', 'ponto-design-art-image-importer'),
+        'all_items'         => __('Todos os Artistas', 'ponto-design-art-image-importer'),
+        'parent_item'       => __('Artista Pai', 'ponto-design-art-image-importer'),
+        'parent_item_colon' => __('Artista Pai:', 'ponto-design-art-image-importer'),
+        'edit_item'         => __('Editar Artista', 'ponto-design-art-image-importer'),
+        'update_item'       => __('Atualizar Artista', 'ponto-design-art-image-importer'),
+        'add_new_item'      => __('Adicionar Novo Artista', 'ponto-design-art-image-importer'),
+        'new_item_name'     => __('Nome do Novo Artista', 'ponto-design-art-image-importer'),
+        'menu_name'         => __('Artistas', 'ponto-design-art-image-importer'),
+    ];
+
+    $args = [
+        'hierarchical'      => false, // Set to true if you want a category-like structure
+        'labels'            => $labels,
+        'show_ui'           => true,
+        'show_admin_column' => true,
+        'query_var'         => true,
+        'rewrite'           => ['slug' => 'artista'], // URL slug for the artist taxonomy
+        'show_in_rest'      => true, // Enable for Gutenberg and REST API
+    ];
+
+    register_taxonomy('artist', ['product'], $args); // Associate with 'product' post type
 });
