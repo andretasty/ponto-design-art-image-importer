@@ -22,6 +22,9 @@ require_once ART_IMAGE_PLUGIN_DIR . 'includes/pricing.php';
 // Carrega o gerenciador de preços
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/async-handler.php';
 
+// Carrega o agendamento via WP Cron
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/cron.php';
+
 // Carrega os campos personalizados
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/product-fields.php';
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/category-fields.php';
