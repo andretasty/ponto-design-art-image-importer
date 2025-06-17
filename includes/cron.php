@@ -31,10 +31,8 @@ function art_image_run_scheduled_import() {
     $current_time = current_time('H:i');
     if ($current_time !== $configured_time) return;
 
-    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
-    art_image_import_categories();
-    art_image_import_products();
-    art_image_import_artists();
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
+    art_image_run_sync();
 }
 
 /**
