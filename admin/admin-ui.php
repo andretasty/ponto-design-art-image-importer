@@ -26,6 +26,7 @@ function art_image_render_admin_page() {
     echo '<h1>Art Image</h1>';
     echo '<h2 class="nav-tab-wrapper">';
     echo '<a href="?page=art-image&tab=settings" class="nav-tab ' . ($active_tab === 'settings' ? 'nav-tab-active' : '') . '">Configurações</a>';
+    echo '<a href="?page=art-image&tab=discounts" class="nav-tab ' . ($active_tab === 'discounts' ? 'nav-tab-active' : '') . '">Descontos</a>';
     echo '<a href="?page=art-image&tab=manual_import" class="nav-tab ' . ($active_tab === 'manual_import' ? 'nav-tab-active' : '') . '">Importação Manual</a>';
     echo '</h2>';
 
@@ -33,6 +34,14 @@ function art_image_render_admin_page() {
         echo '<form method="post" action="options.php">';
         settings_fields('art_image_settings_group');
         do_settings_sections('art_image_settings');
+        submit_button();
+        echo '</form>';
+    }
+
+    if ($active_tab === 'discounts') {
+        echo '<form method="post" action="options.php">';
+        settings_fields('art_image_settings_group');
+        do_settings_sections('art_image_discounts');
         submit_button();
         echo '</form>';
     }

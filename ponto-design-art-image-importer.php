@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name: Art Image
- * Plugin URI: https://seudominio.com/art-image
+ * Plugin URI: https://unitedweb.com.br/
  * Description: Importador automático e manual de categorias, produtos e artistas de uma fonte externa, com agendamento e logs em tempo real.
  * Version: 1.0.0
- * Author: Seu Nome ou Empresa
- * Author URI: https://seudominio.com
+ * Author: André Schmidt
+ * Author URI: https://unitedweb.com.br
  * License: GPL2
  * Text Domain: art-image
  * Domain Path: /languages

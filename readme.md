@@ -1,61 +1,42 @@
-# WP Remote Import Sync
+# Art Image Importer
 
-## Descrição
-
-Plugin para WordPress que realiza a importação de categorias, produtos e artistas de um site externo. A importação pode ser feita manualmente através do painel administrativo, ou automaticamente via agendamento diário.
-
-## Funcionalidades
-
-- Login automático no site de terceiros.
-- Importação de dados via botão manual ou cron job.
-- Painel administrativo com:
-  - Aba de configurações (email, senha, horário da tarefa).
-  - Aba de importação manual com log em tempo real.
-- Importação assíncrona para evitar travamentos da interface do usuário.
-- Organização modular de código para facilitar manutenção e escalabilidade.
-
-## Estrutura
-
-- `/admin`: Interface administrativa, scripts e estilos.
-- `/includes`: Núcleo da lógica de integração, importação e cron jobs.
-- `/logs`: Armazenamento de logs de importação.
-- `wp-remote-import-sync.php`: Arquivo principal de carregamento do plugin.
-
-## Requisitos
-
-- WordPress 5.8+
-- PHP 7.4+
+Plugin para importação e sincronização de produtos de arte.
 
 ## Instalação
 
-1. Faça upload da pasta `wp-remote-import-sync` para o diretório `/wp-content/plugins/`.
-2. Ative o plugin no painel administrativo.
-3. Acesse **Configurações > WP Remote Import Sync** para configurar.
+1. Faça upload do plugin para a pasta `/wp-content/plugins/`
+2. Ative o plugin através do menu 'Plugins' no WordPress
+3. Configure as credenciais de acesso na página de configurações do plugin
 
-## Estrutura de arquivos
+## Sincronização Automática
 
-wp-remote-import-sync/
-│
-├── wp-remote-import-sync.php         # Arquivo principal do plugin
-├── readme.md                         # Documentação básica do plugin
-├── uninstall.php                     # Limpeza de dados na desinstalação (se necessário)
-│
-├── /admin/
-│   ├── admin-ui.php                  # Tela de administração com abas e campos
-│   ├── assets/
-│   │   ├── js/
-│   │   │   └── import-logs.js        # Atualização em tempo real dos logs via AJAX
-│   │   └── css/
-│   │       └── admin-style.css       # Estilo do painel administrativo
-│   └── settings.php                  # Registro e manipulação das opções de e-mail, senha e horário
-│
-├── /includes/
-│   ├── loader.php                    # Inicialização do plugin, hooks, includes
-│   ├── api-client.php                # Cliente HTTP para logar e buscar dados no site externo
-│   ├── importer.php                  # Lógica de importação de categorias, produtos e artistas
-│   ├── cron.php                      # Agendamento e execução das tarefas via cron
-│   └── async-handler.php            # Processamento assíncrono dos dados (via WP AJAX ou WP Background Processing)
-│
-└── /logs/
-    └── import-log-[type].log        # Logs separados por tipo: categoria, produto, artista
+O plugin utiliza o WP Cron do WordPress para sincronização automática. A sincronização é agendada para ocorrer diariamente às 02:00.
+
+Para garantir que o WP Cron funcione corretamente em sites com pouco tráfego, você pode:
+
+1. Configurar um cron real do sistema para acionar o WP Cron:
+   ```bash
+   # Adicione ao crontab do sistema
+   */15 * * * * wget -q -O - http://seu-site.com/wp-cron.php?doing_wp_cron >/dev/null 2>&1
+   ```
+
+2. Ou usar um serviço de monitoramento como o UptimeRobot para acessar o site periodicamente.
+
+## Logs
+
+O plugin mantém logs detalhados da sincronização em:
+- `wp-content/art-image-sync.log`: Log detalhado da sincronização
+
+## Funcionalidades
+
+- Importação de categorias e subcategorias
+- Importação de artistas
+- Importação de produtos com imagens
+- Sincronização automática via WP Cron
+- Margem de lucro configurável (global e por categoria)
+- Atualização automática de produtos existentes
+
+## Suporte
+
+Para suporte, entre em contato através do email: [seu-email@dominio.com]
 

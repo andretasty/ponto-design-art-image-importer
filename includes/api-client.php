@@ -223,14 +223,21 @@ class ArtImageApiClient
 
     // Busca os produtos
 
-    public function get_products($subcategory_slug)
+    public function get_products($subcategory_slug_or_url)
     {
         $cookies = $this->get_authenticated_cookies();
         if (!$cookies) return [];
 
         $cookie_header = $this->format_cookies($cookies);
 
-        $base_url = "https://artimage.com.br/produtos/{$subcategory_slug}?order=1&grid=mini&page=1";
+        // Permite receber uma URL completa ou apenas o slug
+        if (strpos($subcategory_slug_or_url, 'http') === 0) {
+            // É uma URL completa
+            $base_url = $subcategory_slug_or_url;
+        } else {
+            // É um slug
+            $base_url = "https://artimage.com.br/produtos/{$subcategory_slug_or_url}?order=1&grid=mini&page=1";
+        }
 
         // Pega a primeira página para descobrir o total de páginas
         $response = wp_remote_get($base_url, [
@@ -251,7 +258,13 @@ class ArtImageApiClient
         $products = [];
 
         for ($page = 1; $page <= $total_pages; $page++) {
-            $url = "https://artimage.com.br/produtos/{$subcategory_slug}?order=1&grid=mini&page={$page}";
+            if (strpos($subcategory_slug_or_url, 'http') === 0) {
+                // Adiciona ou substitui o parâmetro page na URL
+                $url = preg_replace('/([&?])page=\d*/', '', $subcategory_slug_or_url);
+                $url .= (strpos($url, '?') === false ? '?' : '&') . 'order=1&grid=mini&page=' . $page;
+            } else {
+                $url = "https://artimage.com.br/produtos/{$subcategory_slug_or_url}?order=1&grid=mini&page={$page}";
+            }
 
             $response = wp_remote_get($url, [
                 'headers' => ['Cookie' => $cookie_header],

@@ -1,29 +1,35 @@
 <?php
+/**
+ * Carregador principal do plugin
+ */
+
 if (!defined('ABSPATH')) {
     exit;
 }
 
-/**
- * Carrega arquivos essenciais do plugin
- */
-
-// Admin interface
-require_once ART_IMAGE_PLUGIN_DIR . 'admin/settings.php';
-require_once ART_IMAGE_PLUGIN_DIR . 'admin/admin-ui.php';
-
-// Post Types
-require_once ART_IMAGE_PLUGIN_DIR . 'includes/post-types.php';
-
-// Importadores e utilidades
+// Carrega a API primeiro
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/api-client.php';
+
+// Carrega o gerenciador de sincronização
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
+
+// Carrega o importador
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+
+// Carrega o gerenciador de preços
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/pricing.php';
+
+// Carrega o gerenciador de preços
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/async-handler.php';
 
-// Cron e agendamentos
-require_once ART_IMAGE_PLUGIN_DIR . 'includes/cron.php';
+// Carrega os campos personalizados
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/product-fields.php';
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/category-fields.php';
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/post-types.php';
 
-add_action('init', function () {
-    do_action('art_image_plugin_loaded');
+// Carrega a interface administrativa
+require_once ART_IMAGE_PLUGIN_DIR . 'admin/admin-ui.php';
+require_once ART_IMAGE_PLUGIN_DIR . 'admin/settings.php';
 
-    new ArtImageImporter();
-});
+// Inicializa o plugin
+do_action('art_image_loaded');

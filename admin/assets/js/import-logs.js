@@ -274,7 +274,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const handleGenericBatchImport = (button, type) => {
         const importState = startImport(button, type);
         if (!importState) return; 
-        const { cleanup } = importState; // timer is not directly used by this function after startImport
+        const { cleanup } = importState;
 
         appendLog(`Iniciando importação de ${getTypeName(type)}...`);
         if (type !== 'products') { 
@@ -295,14 +295,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
         }
 
+        // Defina processBatch ANTES de prepareQueueBatch
         const processBatch = (page) => {
             if (!isImporting || currentImportType !== type) {
                 appendLog(`Importação de ${getTypeName(type)} interrompida externamente ou sobreposta.`);
-                // cleanup(false); // Cleanup is called by the new process or by cancel button logic
-                // resetState(); // resetState is also handled by the new process or cancel logic
                 return;
             }
-
             fetch(ajaxurl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -314,27 +312,21 @@ document.addEventListener('DOMContentLoaded', function () {
                     appendLog(`Importação de ${getTypeName(type)} interrompida (pós-fetch).`);
                     return; 
                 }
-
                 if (response.success) {
                     const data = response.data;
                     if (Array.isArray(data.logs)) {
                         data.logs.forEach(msg => appendLog(msg));
                     }
- 
-                    // Unified progress update for all types, now that products also have total_to_import
                     if (typeof data.current_total_processed !== 'undefined' && typeof data.total_to_import !== 'undefined') {
                         updateProgress( data.current_total_processed, data.total_to_import, `${data.current_total_processed}/${data.total_to_import} ${getTypeName(type)}`);
                     } else if (page === 1 && data.status !== 'processing' && data.status !== 'error' && data.status !== 'cancelled') {
-                        // Fallback for initial call if totals aren't immediately available but it's not an error/processing
                          updateProgress(0,0, data.logs && data.logs.length > 0 ? data.logs[data.logs.length-1] : 'Aguardando...');
                     }
- 
                     if (data.status === 'processing' && data.has_more) {
                         setTimeout(() => processBatch(data.next_page), 500);
                     } else if (data.status === 'completed') {
                         let message = `Importação de ${getTypeName(type)} concluída com sucesso!`;
                         appendLog(message);
-
                         if (typeof data.total_to_import !== 'undefined' && data.total_to_import > 0) {
                            updateProgress(data.total_to_import, data.total_to_import, 'Concluído!');
                         } else if (typeof data.total_to_import !== 'undefined' && data.total_to_import === 0) {
@@ -367,6 +359,60 @@ document.addEventListener('DOMContentLoaded', function () {
                 cleanup(false); 
             });
         };
+
+        // NOVO FLUXO PARA PRODUTOS: preparação incremental da fila
+        if (type === 'products') {
+            let currentSubIndex = 0;
+            const prepareQueueBatch = () => {
+                fetch(ajaxurl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ action: 'art_image_prepare_product_import_queue_batch', current_sub_index: currentSubIndex, _ajax_nonce: art_image_ajax.nonce })
+                })
+                .then(res => res.json())
+                .then(response => {
+                    if (!isImporting || currentImportType !== type) {
+                        appendLog(`Preparação da fila de produtos interrompida.`);
+                        return;
+                    }
+                    if (response.success) {
+                        const data = response.data;
+                        if (Array.isArray(data.logs)) {
+                            data.logs.forEach(msg => appendLog(msg));
+                        }
+                        if (data.status === 'preparing' && data.has_more) {
+                            // Atualiza progresso
+                            updateProgress(data.current_sub_index, data.total_subs, `Preparando fila: ${data.current_sub_index}/${data.total_subs} subcategorias`);
+                            currentSubIndex = data.current_sub_index;
+                            setTimeout(prepareQueueBatch, 300);
+                        } else if (data.status === 'completed') {
+                            appendLog('Fila de produtos preparada. Iniciando importação em lotes...');
+                            updateProgress(0, data.product_queue_count || 0, 'Preparando importação...');
+                            processBatch(1); // Agora processBatch já está definido!
+                        } else if (data.status === 'cancelled') {
+                            appendLog('Preparação da fila de produtos cancelada.');
+                            cleanup(false, data);
+                        } else {
+                            appendLog('Status inesperado na preparação da fila de produtos: ' + (data.status || 'desconhecido'));
+                            cleanup(false, data);
+                        }
+                    } else {
+                        appendLog('Erro na preparação da fila de produtos: ' + (response.data?.message || response.data || 'Erro desconhecido'));
+                        cleanup(false, response.data);
+                    }
+                })
+                .catch(error => {
+                    appendLog('Erro AJAX na preparação da fila de produtos: ' + error.message);
+                    cleanup(false);
+                });
+            };
+            // Inicia preparação incremental
+            prepareQueueBatch();
+            // processBatch só será chamado após a preparação
+            return;
+        }
+
+        // FLUXO PADRÃO PARA OUTROS TIPOS
         processBatch(currentPage);
     };
 
