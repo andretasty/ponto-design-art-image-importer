@@ -526,14 +526,14 @@ class ArtImageImporter
                     'has_more' => false,
                 ];
             }
-            set_transient($subs_list_key, $subs, 1 * HOUR_IN_SECONDS);
-            set_transient($queue_key, [], 1 * HOUR_IN_SECONDS);
+            set_transient($subs_list_key, $subs, 6 * HOUR_IN_SECONDS);
+            set_transient($queue_key, [], 6 * HOUR_IN_SECONDS);
         }
 
         if ($current_sub_index >= count($subs)) {
             $product_queue = get_transient($queue_key);
             $queue_count = is_array($product_queue) ? count($product_queue) : 0;
-            set_transient($total_key, $queue_count, 1 * HOUR_IN_SECONDS);
+            set_transient($total_key, $queue_count, 6 * HOUR_IN_SECONDS);
             $logs[] = "Preparação da fila de produtos concluída. Total de produtos: $queue_count.";
             delete_transient($subs_list_key);
             return [
@@ -573,7 +573,7 @@ class ArtImageImporter
         } else {
             $logs[] = "Nenhum produto encontrado para {$sub->name}.";
         }
-        set_transient($queue_key, $product_queue, 1 * HOUR_IN_SECONDS);
+        set_transient($queue_key, $product_queue, 6 * HOUR_IN_SECONDS);
         $logs[] = "Progresso: " . ($current_sub_index + 1) . "/" . count($subs) . " subcategorias.";
         return [
             'status' => 'preparing',
@@ -586,6 +586,9 @@ class ArtImageImporter
 
     public function import_products_batch(int $page = 1, int $batch_size = 5): array
     {
+        // Aplica otimizações antes de começar
+        do_action('art_image_before_import');
+        
         $logs = [];
         $processed_in_batch = 0;
         $master_lock_key = 'artimage_master_import_lock';
@@ -600,8 +603,8 @@ class ArtImageImporter
             if (get_transient($master_lock_key)) {
                 return ['status' => 'error', 'logs' => ['Outro processo de importação (master) já está em execução – abortando produtos.'], 'has_more' => false];
             }
-            set_transient($master_lock_key, 'products', 15 * MINUTE_IN_SECONDS);
-            set_transient($batch_lock_key, 1, 15 * MINUTE_IN_SECONDS);
+            set_transient($master_lock_key, 'products', 6 * HOUR_IN_SECONDS);
+            set_transient($batch_lock_key, 1, 6 * HOUR_IN_SECONDS);
             delete_transient($cancel_flag_key);
             delete_transient($total_key); // Clear previous total
 
@@ -611,7 +614,7 @@ class ArtImageImporter
                 $logs[] = "Iniciando preparação da fila de produtos. Isso pode levar algum tempo...";
                 $preparation_result = $this->prepare_product_import_queue_batch();
                 $logs = array_merge($logs, $preparation_result['logs']);
-                set_transient($total_key, $preparation_result['product_queue_count'], 1 * HOUR_IN_SECONDS);
+                set_transient($total_key, $preparation_result['product_queue_count'], 6 * HOUR_IN_SECONDS);
                 $logs[] = "Preparação da fila de produtos concluída. Total de produtos na fila para esta sessão: " . $preparation_result['product_queue_count'];
 
                 if ($preparation_result['product_queue_count'] === 0) {
@@ -807,7 +810,7 @@ class ArtImageImporter
             $processed_in_batch++;
         }
         
-        set_transient($processed_key, $current_total_processed, 1 * HOUR_IN_SECONDS);
+        set_transient($processed_key, $current_total_processed, 6 * HOUR_IN_SECONDS);
         
         $next_batch_start_index = $page * $batch_size;
         $has_more_in_current_queue = count((array)$product_queue) > $next_batch_start_index;
