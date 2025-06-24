@@ -54,11 +54,8 @@ class ArtImageSyncManager {
     public function run_sync() {
         $this->log('Iniciando sincronização...');
         
-        // Sincroniza categorias principais
+        // Sincroniza categorias
         $this->sync_categories();
-        
-        // Sincroniza subcategorias
-        $this->sync_subcategories();
         
         // Sincroniza artistas
         $this->sync_artists();

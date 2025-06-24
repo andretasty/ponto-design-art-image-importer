@@ -47,7 +47,6 @@ function art_image_run_scheduled_import() {
     
     try {
         art_image_import_categories();
-        art_image_import_subcategories();
         art_image_import_products();
         art_image_import_artists();
         art_image_log_cron('Importação agendada concluída com sucesso');
