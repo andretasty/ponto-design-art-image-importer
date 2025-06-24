@@ -65,6 +65,8 @@ class ArtImageImporter
      */
     public function import_categories(int $page = 1, int $batch_size = 20): array
     {
+        global $artimage_sync_tracker;
+        
         $logs = [];
         $processed_in_batch = 0;
         $master_lock_key = 'artimage_master_import_lock';
@@ -205,9 +207,19 @@ class ArtImageImporter
                 if (is_wp_error($result)) {
                     $logs[] = 'Erro ao criar categoria "' . $cat_data['nome'] . '": ' . $result->get_error_message();
                 } else {
+                    $term_id = $result['term_id'];
+                    // Marca categoria como importada
+                    if ($artimage_sync_tracker) {
+                        $artimage_sync_tracker->mark_category_imported($term_id, $cat_data['slug']);
+                    }
                     $logs[] = "Categoria criada: {$cat_data['nome']}";
                 }
             } else {
+                $term_id = is_array($term) ? $term['term_id'] : $term;
+                // Marca categoria existente como importada
+                if ($artimage_sync_tracker) {
+                    $artimage_sync_tracker->mark_category_imported($term_id, $cat_data['slug']);
+                }
                 $logs[] = "Categoria já existe: {$cat_data['nome']}";
             }
             $current_total_processed++;
@@ -246,6 +258,8 @@ class ArtImageImporter
      */
     public function import_subcategories(int $page = 1, int $batch_size = 20): array
     {
+        global $artimage_sync_tracker;
+        
         $logs = [];
         $processed_in_batch = 0;
         $master_lock_key = 'artimage_master_import_lock';
@@ -440,12 +454,20 @@ class ArtImageImporter
                     if ($filtro_sub_id) {
                         update_term_meta($term_id, 'filtro_sub_id', $filtro_sub_id);
                     }
+                    // Marca subcategoria como importada
+                    if ($artimage_sync_tracker) {
+                        $artimage_sync_tracker->mark_category_imported($term_id, $sub_data['slug']);
+                    }
                 }
             } else {
                 $logs[] = "Subcategoria já existe: {$sub_data['nome']}";
                 $term_id = is_array($term) ? $term['term_id'] : $term;
                 if ($filtro_sub_id) {
                     update_term_meta($term_id, 'filtro_sub_id', $filtro_sub_id);
+                }
+                // Marca subcategoria existente como importada
+                if ($artimage_sync_tracker) {
+                    $artimage_sync_tracker->mark_category_imported($term_id, $sub_data['slug']);
                 }
             }
             $current_total_processed++;
@@ -526,14 +548,14 @@ class ArtImageImporter
                     'has_more' => false,
                 ];
             }
-            set_transient($subs_list_key, $subs, 6 * HOUR_IN_SECONDS);
-            set_transient($queue_key, [], 6 * HOUR_IN_SECONDS);
+            set_transient($subs_list_key, $subs, 12 * HOUR_IN_SECONDS);
+            set_transient($queue_key, [], 12 * HOUR_IN_SECONDS);
         }
 
         if ($current_sub_index >= count($subs)) {
             $product_queue = get_transient($queue_key);
             $queue_count = is_array($product_queue) ? count($product_queue) : 0;
-            set_transient($total_key, $queue_count, 6 * HOUR_IN_SECONDS);
+            set_transient($total_key, $queue_count, 12 * HOUR_IN_SECONDS);
             $logs[] = "Preparação da fila de produtos concluída. Total de produtos: $queue_count.";
             delete_transient($subs_list_key);
             return [
@@ -573,7 +595,7 @@ class ArtImageImporter
         } else {
             $logs[] = "Nenhum produto encontrado para {$sub->name}.";
         }
-        set_transient($queue_key, $product_queue, 6 * HOUR_IN_SECONDS);
+        set_transient($queue_key, $product_queue, 12 * HOUR_IN_SECONDS);
         $logs[] = "Progresso: " . ($current_sub_index + 1) . "/" . count($subs) . " subcategorias.";
         return [
             'status' => 'preparing',
@@ -589,6 +611,8 @@ class ArtImageImporter
         // Aplica otimizações antes de começar
         do_action('art_image_before_import');
         
+        global $artimage_sync_tracker;
+        
         $logs = [];
         $processed_in_batch = 0;
         $master_lock_key = 'artimage_master_import_lock';
@@ -603,10 +627,16 @@ class ArtImageImporter
             if (get_transient($master_lock_key)) {
                 return ['status' => 'error', 'logs' => ['Outro processo de importação (master) já está em execução – abortando produtos.'], 'has_more' => false];
             }
-            set_transient($master_lock_key, 'products', 6 * HOUR_IN_SECONDS);
-            set_transient($batch_lock_key, 1, 6 * HOUR_IN_SECONDS);
+            set_transient($master_lock_key, 'products', 12 * HOUR_IN_SECONDS);
+            set_transient($batch_lock_key, 1, 12 * HOUR_IN_SECONDS);
             delete_transient($cancel_flag_key);
             delete_transient($total_key); // Clear previous total
+            
+            // Inicia nova sessão de sincronização
+            if ($artimage_sync_tracker) {
+                $artimage_sync_tracker->start_sync_session();
+                $logs[] = "Nova sessão de sincronização iniciada.";
+            }
 
             // Só prepara a fila se ela não existir ou estiver vazia
             $product_queue = get_transient($queue_key);
@@ -614,7 +644,7 @@ class ArtImageImporter
                 $logs[] = "Iniciando preparação da fila de produtos. Isso pode levar algum tempo...";
                 $preparation_result = $this->prepare_product_import_queue_batch();
                 $logs = array_merge($logs, $preparation_result['logs']);
-                set_transient($total_key, $preparation_result['product_queue_count'], 6 * HOUR_IN_SECONDS);
+                set_transient($total_key, $preparation_result['product_queue_count'], 12 * HOUR_IN_SECONDS);
                 $logs[] = "Preparação da fila de produtos concluída. Total de produtos na fila para esta sessão: " . $preparation_result['product_queue_count'];
 
                 if ($preparation_result['product_queue_count'] === 0) {
@@ -706,18 +736,19 @@ class ArtImageImporter
             $sub_parent_id = $item_to_process['subcategory_parent_id'];
 
             $exists = wc_get_product_id_by_sku($p['code']);
+            $product_details = [];
+            
             if ($exists) {
                 $product = wc_get_product($exists);
-                $logs[] = "Atualizando produto existente (SKU {$p['code']}): {$p['title']}";
+                $logs[] = "Atualizando produto existente (SKU {$p['code']}): {$p['title']} - usando dados da listagem";
+                // Para produtos existentes, usar apenas dados da listagem (otimização)
             } else {
                 $product = new WC_Product_Simple();
-                $logs[] = "Criando novo produto (SKU {$p['code']}): {$p['title']}";
-            }
-
-            // SEMPRE buscar detalhes completos do produto
-            $product_details = [];
-            if (!empty($p['link'])) {
-                $product_details = $this->client->get_product_details($p['link']);
+                $logs[] = "Criando novo produto (SKU {$p['code']}): {$p['title']} - buscando detalhes completos";
+                // Só buscar detalhes completos para produtos novos
+                if (!empty($p['link'])) {
+                    $product_details = $this->client->get_product_details($p['link']);
+                }
             }
             $product_title = isset($product_details['title']) && $product_details['title'] ? $product_details['title'] : $p['title'];
             $product_code = isset($product_details['code']) && $product_details['code'] ? $product_details['code'] : $p['code'];
@@ -801,6 +832,11 @@ class ArtImageImporter
                     }
                 }
 
+                // Marca produto como importado nesta sessão
+                if ($artimage_sync_tracker) {
+                    $artimage_sync_tracker->mark_product_imported($prod_id, $product_code);
+                }
+                
                 $logs[] = "Produto " . ($exists ? "atualizado" : "criado") . ": {$product_title} (ID {$prod_id})";
             } else {
                 $error_message = is_wp_error($prod_id) ? $prod_id->get_error_message() : 'Erro desconhecido ao salvar produto.';
@@ -810,7 +846,7 @@ class ArtImageImporter
             $processed_in_batch++;
         }
         
-        set_transient($processed_key, $current_total_processed, 6 * HOUR_IN_SECONDS);
+        set_transient($processed_key, $current_total_processed, 12 * HOUR_IN_SECONDS);
         
         $next_batch_start_index = $page * $batch_size;
         $has_more_in_current_queue = count((array)$product_queue) > $next_batch_start_index;
@@ -820,6 +856,19 @@ class ArtImageImporter
             // Sempre marcar como concluído quando não há mais itens na fila atual
             $logs[] = "Importação de produtos concluída. Total processado nesta sessão: {$current_total_processed} de {$total_to_import}.";
             $current_status = 'completed';
+            
+            // Finaliza sessão de sincronização e limpa itens não importados
+            if ($artimage_sync_tracker) {
+                $cleanup_enabled = get_option('artimage_enable_cleanup', true);
+                $dry_run = get_option('artimage_cleanup_dry_run', false);
+                
+                $sync_results = $artimage_sync_tracker->finish_sync_session([
+                    'cleanup_enabled' => $cleanup_enabled,
+                    'dry_run' => $dry_run
+                ]);
+                
+                $logs[] = "Sincronização finalizada. Produtos removidos: {$sync_results['products_deleted']}, Categorias: {$sync_results['categories_deleted']}, Artistas: {$sync_results['artists_deleted']}";
+            }
             
             // Limpar transients da importação de produtos
             delete_transient($queue_key);
@@ -849,6 +898,8 @@ class ArtImageImporter
      */
     public function import_artists(int $page = 1, int $batch_size = 20): array
     {
+        global $artimage_sync_tracker;
+        
         $logs = [];
         $processed_in_batch = 0;
         $master_lock_key = 'artimage_master_import_lock';
@@ -997,6 +1048,10 @@ class ArtImageImporter
                 } else {
                     update_term_meta($term_id, '_external_slug', $a['slug']); 
                     update_term_meta($term_id, '_image_url', $a['image']);
+                    // Marca artista como importado
+                    if ($artimage_sync_tracker) {
+                        $artimage_sync_tracker->mark_artist_imported($term_id, $a['slug']);
+                    }
                     $logs[] = "Artista (termo) atualizado: {$a['title']} (ID {$term_id}).";
                 }
             } else {
@@ -1015,6 +1070,10 @@ class ArtImageImporter
                     $term_id = $term_data['term_id'];
                     update_term_meta($term_id, '_external_slug', $a['slug']); 
                     update_term_meta($term_id, '_image_url', $a['image']);
+                    // Marca artista como importado
+                    if ($artimage_sync_tracker) {
+                        $artimage_sync_tracker->mark_artist_imported($term_id, $a['slug']);
+                    }
                     $logs[] = "Artista (termo) criado: {$a['title']} (ID {$term_id})";
                 }
             }

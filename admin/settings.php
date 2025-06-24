@@ -109,4 +109,45 @@ add_action('admin_init', function () {
         'art_image_discounts_section',
         ['label_for' => 'art_image_discount_percent', 'class' => 'art-image-discount-field', 'data-setting' => 'art_image_discount_percent']
     );
+
+    // Nova seção para configurações de sincronização
+    add_settings_section(
+        'art_image_sync_section',
+        __('Configurações de Sincronização', 'art-image'),
+        function() {
+            echo '<p>Configure o comportamento da sincronização automática de dados.</p>';
+        },
+        'art_image_settings'
+    );
+
+    register_setting('art_image_settings_group', 'artimage_enable_cleanup');
+    register_setting('art_image_settings_group', 'artimage_cleanup_dry_run');
+
+    add_settings_field(
+        'artimage_enable_cleanup',
+        __('Ativar Limpeza Automática', 'art-image'),
+        function () {
+            $checked = checked(get_option('artimage_enable_cleanup', '1'), '1', false);
+            echo "<input type='checkbox' name='artimage_enable_cleanup' value='1' $checked /> ";
+            echo "<span>Remover automaticamente itens que não estão mais na fonte externa</span>";
+            echo "<p class='description'>Se ativado, produtos, categorias e artistas que não forem encontrados durante a importação serão removidos do site.</p>";
+        },
+        'art_image_settings',
+        'art_image_sync_section',
+        ['label_for' => 'artimage_enable_cleanup']
+    );
+
+    add_settings_field(
+        'artimage_cleanup_dry_run',
+        __('Modo de Teste (Dry Run)', 'art-image'),
+        function () {
+            $checked = checked(get_option('artimage_cleanup_dry_run', '0'), '1', false);
+            echo "<input type='checkbox' name='artimage_cleanup_dry_run' value='1' $checked /> ";
+            echo "<span>Apenas simular a remoção (não remover realmente)</span>";
+            echo "<p class='description'>Se ativado, a limpeza será apenas simulada e registrada nos logs, sem remover os itens.</p>";
+        },
+        'art_image_settings',
+        'art_image_sync_section',
+        ['label_for' => 'artimage_cleanup_dry_run']
+    );
 });

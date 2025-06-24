@@ -28,6 +28,7 @@ function art_image_render_admin_page() {
     echo '<a href="?page=art-image&tab=settings" class="nav-tab ' . ($active_tab === 'settings' ? 'nav-tab-active' : '') . '">Configurações</a>';
     echo '<a href="?page=art-image&tab=discounts" class="nav-tab ' . ($active_tab === 'discounts' ? 'nav-tab-active' : '') . '">Descontos</a>';
     echo '<a href="?page=art-image&tab=manual_import" class="nav-tab ' . ($active_tab === 'manual_import' ? 'nav-tab-active' : '') . '">Importação Manual</a>';
+    echo '<a href="?page=art-image&tab=sync_stats" class="nav-tab ' . ($active_tab === 'sync_stats' ? 'nav-tab-active' : '') . '">Estatísticas</a>';
     echo '</h2>';
 
     if ($active_tab === 'settings') {
@@ -82,6 +83,56 @@ function art_image_render_admin_page() {
         echo '</div>';
 
         echo '</div>'; // End .art-image-admin
+    }
+
+    if ($active_tab === 'sync_stats') {
+        global $artimage_sync_tracker;
+        
+        echo '<div class="art-image-admin">';
+        echo '<h3>Estatísticas de Sincronização</h3>';
+        
+        if ($artimage_sync_tracker) {
+            $stats = $artimage_sync_tracker->get_sync_stats();
+            
+            echo '<table class="widefat">';
+            echo '<tr><td><strong>Última Sincronização - Início:</strong></td><td>' . ($stats['last_sync_start'] ?: 'Nunca') . '</td></tr>';
+            echo '<tr><td><strong>Última Sincronização - Fim:</strong></td><td>' . ($stats['last_sync_end'] ?: 'Nunca') . '</td></tr>';
+            
+            if (!empty($stats['last_sync_results'])) {
+                $results = $stats['last_sync_results'];
+                echo '<tr><td><strong>Produtos Removidos:</strong></td><td>' . ($results['products_deleted'] ?? 0) . '</td></tr>';
+                echo '<tr><td><strong>Categorias Removidas:</strong></td><td>' . ($results['categories_deleted'] ?? 0) . '</td></tr>';
+                echo '<tr><td><strong>Artistas Removidos:</strong></td><td>' . ($results['artists_deleted'] ?? 0) . '</td></tr>';
+            }
+            
+            echo '<tr><td><strong>ID da Sessão Atual:</strong></td><td>' . ($stats['current_sync_id'] ?: 'Nenhuma') . '</td></tr>';
+            echo '</table>';
+            
+            // Configurações de limpeza
+            echo '<h4>Configurações Atuais</h4>';
+            echo '<table class="widefat">';
+            echo '<tr><td><strong>Limpeza Automática:</strong></td><td>' . (get_option('artimage_enable_cleanup', true) ? 'Ativada' : 'Desativada') . '</td></tr>';
+            echo '<tr><td><strong>Modo Teste (Dry Run):</strong></td><td>' . (get_option('artimage_cleanup_dry_run', false) ? 'Ativado' : 'Desativado') . '</td></tr>';
+            echo '</table>';
+            
+            // Botão para forçar limpeza manual
+            echo '<h4>Ações Manuais</h4>';
+            echo '<button class="button" onclick="if(confirm(\'Tem certeza que deseja executar a limpeza manual?\')) { 
+                fetch(ajaxurl, {
+                    method: \'POST\',
+                    headers: { \'Content-Type\': \'application/x-www-form-urlencoded\' },
+                    body: new URLSearchParams({ action: \'art_image_manual_cleanup\', _ajax_nonce: \'' . wp_create_nonce('art_image_nonce') . '\' })
+                }).then(res => res.json()).then(data => {
+                    alert(data.success ? \'Limpeza executada com sucesso!\' : \'Erro: \' + (data.data?.message || \'Erro desconhecido\'));
+                    location.reload();
+                });
+            }">Executar Limpeza Manual</button>';
+            
+        } else {
+            echo '<p>Sistema de tracking não disponível.</p>';
+        }
+        
+        echo '</div>';
     }
 
     echo '</div>';

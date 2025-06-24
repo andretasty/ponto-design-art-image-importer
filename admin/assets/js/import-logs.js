@@ -92,6 +92,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const displayActiveImports = (activeImportType) => {
         if (!activeImportsListElement || !activeImportsSectionElement) return;
+        
+        // Limpa qualquer mensagem de cancelamento anterior
+        clearTimeout(window.artImageDisplayTimeout);
+        
         activeImportsListElement.innerHTML = ''; 
 
         if (activeImportType && activeImportType !== false && activeImportType !== '') {
@@ -126,8 +130,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
 
                 appendLog(`Enviando solicitação para cancelar importação ativa de ${getTypeName(typeToCancel)}...`);
-                this.disabled = true;
-                activeImportsListElement.textContent = `Cancelamento de ${getTypeName(typeToCancel)} solicitado...`;
+                
+                // Feedback imediato - remove o botão e mostra status de cancelamento
+                this.style.display = 'none';
+                activeImportsListElement.innerHTML = `<div style="padding: 10px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; color: #856404;">
+                    <strong>Cancelando ${getTypeName(typeToCancel)}...</strong><br>
+                    <small>Aguarde enquanto o processo é interrompido.</small>
+                </div>`;
 
                 // Se este processo é o mesmo que está rodando localmente, cancelar também
                 if (isImporting && currentImportType === typeToCancel) {
@@ -143,31 +152,70 @@ document.addEventListener('DOMContentLoaded', function () {
                 .then(response => {
                     if(response.success) {
                         appendLog(`Cancelamento de ${getTypeName(typeToCancel)} processado com sucesso.`);
+                        
+                        // Atualiza a interface imediatamente - mostra sucesso e depois remove
+                        activeImportsListElement.innerHTML = `<div style="padding: 10px; background: #d4edda; border: 1px solid #c3e6cb; border-radius: 4px; color: #155724;">
+                            <strong>✓ ${getTypeName(typeToCancel)} cancelado com sucesso!</strong><br>
+                            <small>O processo foi interrompido.</small>
+                        </div>`;
+                        
+                        // Após 2 segundos, volta ao estado padrão
+                        window.artImageDisplayTimeout = setTimeout(() => {
+                            if (activeImportsListElement) {
+                                activeImportsListElement.textContent = 'Nenhum processo em andamento no momento.';
+                            }
+                        }, 2000);
+                        
                         // Se era o processo local, resetar o estado
                         if (currentImportType === typeToCancel) {
                             resetState();
                         } else {
-                            setTimeout(fetchActiveImports, 1500);
+                            // Confirma o estado atualizado após um pequeno delay
+                            setTimeout(fetchActiveImports, 500);
                         }
                     } else {
                         appendLog(`Erro ao processar cancelamento para ${getTypeName(typeToCancel)}: ${response.data?.message || 'Erro desconhecido'}`);
+                        
+                        // Mostra erro na interface
+                        activeImportsListElement.innerHTML = `<div style="padding: 10px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24;">
+                            <strong>✗ Erro ao cancelar ${getTypeName(typeToCancel)}</strong><br>
+                            <small>${response.data?.message || 'Erro desconhecido'}. Verifique os logs.</small>
+                        </div>`;
+                        
                         // Mesmo com erro, se era processo local, resetar
                         if (currentImportType === typeToCancel) {
                             resetState();
                         } else {
-                            this.disabled = false;
-                            fetchActiveImports();
+                            // Após 3 segundos, verifica o estado real
+                            window.artImageDisplayTimeout = setTimeout(() => {
+                                fetchActiveImports();
+                            }, 3000);
                         }
                     }
                 })
                 .catch(error => {
                     appendLog(`Erro na requisição de cancelamento para ${getTypeName(typeToCancel)}: ${error.message}`);
+                    
+                    // Como houve erro de conexão, mostra mensagem apropriada
+                    activeImportsListElement.innerHTML = `<div style="padding: 10px; background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 4px; color: #721c24;">
+                        <strong>✗ Erro de conexão ao cancelar ${getTypeName(typeToCancel)}</strong><br>
+                        <small>Falha na comunicação com o servidor. O processo pode ter sido interrompido.</small>
+                    </div>`;
+                    
                     // Mesmo com erro, se era processo local, resetar
                     if (currentImportType === typeToCancel) {
                         resetState();
                     } else {
-                        this.disabled = false;
-                        fetchActiveImports();
+                        // Verifica o estado real após um delay e restaura interface se necessário
+                        window.artImageDisplayTimeout = setTimeout(() => {
+                            fetchActiveImports();
+                            // Se não houver processos ativos, volta ao estado padrão
+                            setTimeout(() => {
+                                if (activeImportsListElement && activeImportsListElement.innerHTML.includes('Erro de conexão')) {
+                                    activeImportsListElement.textContent = 'Nenhum processo em andamento no momento.';
+                                }
+                            }, 2000);
+                        }, 1000);
                     }
                 })
                 .finally(() => {
@@ -223,6 +271,127 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (typeof displayActiveImports === "function") {
             displayActiveImports(null);
         }
+    };
+
+    // Função para verificar e reconectar a importação em andamento
+    const checkAndReconnectImport = () => {
+        if (!art_image_ajax || !art_image_ajax.nonce) return;
+        
+        fetch(ajaxurl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ 
+                action: 'art_image_check_import_state', 
+                _ajax_nonce: art_image_ajax.nonce 
+            })
+        })
+        .then(res => res.json())
+        .then(response => {
+            if (response.success && response.data.lock) {
+                const importType = response.data.lock;
+                const processed = response.data.processed || 0;
+                const total = response.data.total || 0;
+                
+                appendLog(`Reconectando à importação em andamento: ${getTypeName(importType)}`);
+                appendLog(`Progresso atual: ${processed}/${total} itens processados`);
+                
+                // Reconecta à importação
+                isImporting = true;
+                currentImportType = importType;
+                startTime = Date.now() - (30000); // Simula 30 segundos já decorridos
+                
+                // Atualiza interface
+                const button = document.querySelector(`[data-type="${importType}"]`);
+                if (button) setButtonState(button, 'running');
+                
+                if(progressSection) {
+                    progressSection.style.display = 'block';
+                    progressSection.classList.add('active');
+                }
+                if(mainCancelBtn) mainCancelBtn.style.display = 'inline-block';
+                
+                updateProgress(processed, total, `${processed}/${total} ${getTypeName(importType)}`);
+                
+                // Retoma o polling
+                resumeImportPolling(importType);
+            }
+        })
+        .catch(error => {
+            // Silencioso - pode não haver importação em andamento
+        });
+    };
+
+    // Função para retomar o polling da importação
+    const resumeImportPolling = (importType) => {
+        let currentPage = Math.floor((parseInt(get_processed()) || 0) / 5) + 1; // Estima página atual
+        
+        const pollImport = () => {
+            if (!isImporting || currentImportType !== importType) return;
+            
+            let ajaxAction = '';
+            switch (importType) {
+                case 'categories': ajaxAction = 'art_image_import_categories'; break;
+                case 'subcategories': ajaxAction = 'art_image_import_subcategories'; break;
+                case 'artists': ajaxAction = 'art_image_import_artists'; break;
+                case 'products': ajaxAction = 'art_image_import_products'; break;
+                default: return;
+            }
+            
+            fetch(ajaxurl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ 
+                    action: ajaxAction, 
+                    page: currentPage, 
+                    _ajax_nonce: art_image_ajax.nonce 
+                })
+            })
+            .then(res => res.json())
+            .then(response => {
+                if (!isImporting || currentImportType !== importType) return;
+                
+                if (response.success) {
+                    const data = response.data;
+                    if (Array.isArray(data.logs)) {
+                        data.logs.forEach(msg => appendLog(msg));
+                    }
+                    if (typeof data.current_total_processed !== 'undefined' && typeof data.total_to_import !== 'undefined') {
+                        updateProgress(data.current_total_processed, data.total_to_import, `${data.current_total_processed}/${data.total_to_import} ${getTypeName(importType)}`);
+                    }
+                    
+                    if (data.status === 'processing' && data.has_more) {
+                        currentPage = data.next_page;
+                        setTimeout(pollImport, 500);
+                    } else if (data.status === 'completed') {
+                        appendLog(`Importação de ${getTypeName(importType)} concluída!`);
+                        resetState();
+                    } else if (data.status === 'cancelled') {
+                        appendLog(`Importação de ${getTypeName(importType)} cancelada.`);
+                        resetState();
+                    } else if (data.status === 'error') {
+                        appendLog(`Erro na importação de ${getTypeName(importType)}.`);
+                        resetState();
+                    }
+                } else {
+                    appendLog(`Erro ao reconectar importação: ${response.data?.message || 'Erro desconhecido'}`);
+                    resetState();
+                }
+            })
+            .catch(error => {
+                appendLog(`Erro na conexão: ${error.message}`);
+                resetState();
+            });
+        };
+        
+        // Inicia o polling
+        setTimeout(pollImport, 1000);
+    };
+
+    // Função auxiliar para obter valor processado
+    const get_processed = () => {
+        const text = progressText ? progressText.textContent : '';
+        const match = text.match(/(\d+)\/(\d+)/);
+        return match ? match[1] : '0';
     };
 
     const startImport = (button, type) => {
@@ -478,6 +647,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     appendLog('Sistema de importação Art Image pronto.');
     appendLog('Selecione uma opção acima para começar.');
+    
+    // Verifica se há importação em andamento e reconecta automaticamente
+    checkAndReconnectImport();
     
     if (activeImportsSectionElement && activeImportsListElement && typeof art_image_ajax !== 'undefined') {
         fetchActiveImports(); 
