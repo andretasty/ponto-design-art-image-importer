@@ -19,6 +19,7 @@ add_action('wp_ajax_art_image_cancel_artists_import', 'art_image_handle_cancel_a
 add_action('wp_ajax_art_image_cancel_products_import', 'art_image_handle_cancel_products_import');
 add_action('wp_ajax_art_image_get_active_imports', 'art_image_handle_get_active_imports');
 add_action('wp_ajax_art_image_prepare_product_import_queue_batch', 'art_image_handle_prepare_product_import_queue_batch');
+add_action('wp_ajax_art_image_reschedule_all', 'art_image_handle_reschedule_all');
 
 
 function art_image_handle_get_active_imports() {
@@ -134,4 +135,39 @@ function art_image_handle_cancel_products_import() {
     require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
     $importer = new ArtImageImporter();
     $importer->ajax_cancel_products_import();
+}
+
+/**
+ * Handler para reagendar todos os eventos
+ */
+function art_image_handle_reschedule_all() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+    
+    try {
+        $schedule_time = get_option('art_image_schedule_time', '02:00');
+        
+        // Reagenda evento de verificação diária (cron.php)
+        $timestamp = wp_next_scheduled('art_image_daily_event');
+        if ($timestamp) {
+            wp_unschedule_event($timestamp, 'art_image_daily_event');
+        }
+        wp_schedule_event(time(), 'every_five_minutes', 'art_image_daily_event');
+        
+        // Reagenda evento de sincronização completa (sync-manager.php)
+        $result = ArtImageTimezoneHelper::reschedule_event('art_image_daily_sync', $schedule_time, 'daily');
+        
+        if ($result) {
+            ArtImageTimezoneHelper::log_with_timezone('Todos os eventos reagendados via admin');
+            wp_send_json_success(['message' => 'Eventos reagendados com sucesso!']);
+        } else {
+            wp_send_json_error(['message' => 'Erro ao reagendar evento de sincronização']);
+        }
+        
+    } catch (Exception $e) {
+        ArtImageTimezoneHelper::log_with_timezone('Erro ao reagendar eventos: ' . $e->getMessage());
+        wp_send_json_error(['message' => 'Erro: ' . $e->getMessage()]);
+    }
 }

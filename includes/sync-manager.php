@@ -24,8 +24,27 @@ class ArtImageSyncManager {
      */
     public function schedule_sync() {
         if (!wp_next_scheduled('art_image_daily_sync')) {
-            // Agenda para rodar todos os dias às 02:00
-            wp_schedule_event(strtotime('tomorrow 02:00:00'), 'daily', 'art_image_daily_sync');
+            // Calcula o próximo horário de execução considerando o fuso horário do WordPress
+            $timezone = wp_timezone();
+            $now = new DateTime('now', $timezone);
+            $next_run = new DateTime('tomorrow 02:00:00', $timezone);
+            
+            // Se já passou das 02:00 hoje, agenda para amanhã
+            if ($now->format('H:i') >= '02:00') {
+                $next_run = new DateTime('tomorrow 02:00:00', $timezone);
+            } else {
+                // Se ainda não passou das 02:00, agenda para hoje
+                $next_run = new DateTime('today 02:00:00', $timezone);
+            }
+            
+            // Converte para timestamp UTC para o WordPress
+            $timestamp = $next_run->getTimestamp();
+            
+            // Agenda para rodar todos os dias às 02:00 (horário de Brasília)
+            wp_schedule_event($timestamp, 'daily', 'art_image_daily_sync');
+            
+            // Log para debug
+            $this->log('Sincronização agendada para: ' . $next_run->format('Y-m-d H:i:s T'));
         }
     }
 
@@ -35,8 +54,11 @@ class ArtImageSyncManager {
     public function run_sync() {
         $this->log('Iniciando sincronização...');
         
-        // Sincroniza categorias
+        // Sincroniza categorias principais
         $this->sync_categories();
+        
+        // Sincroniza subcategorias
+        $this->sync_subcategories();
         
         // Sincroniza artistas
         $this->sync_artists();
@@ -109,8 +131,54 @@ class ArtImageSyncManager {
      */
     private function log($message) {
         $timestamp = current_time('Y-m-d H:i:s');
-        $log_message = "[{$timestamp}] {$message}\n";
+        $timezone_name = wp_timezone_string();
+        $log_message = "[{$timestamp} {$timezone_name}] {$message}\n";
         error_log($log_message, 3, $this->log_file);
+    }
+
+    /**
+     * Obtém o próximo horário de execução no fuso horário correto
+     */
+    public static function get_next_execution_time($hour = '02:00') {
+        $timezone = wp_timezone();
+        $now = new DateTime('now', $timezone);
+        $target_time = new DateTime('today ' . $hour, $timezone);
+        
+        // Se já passou do horário hoje, agenda para amanhã
+        if ($now >= $target_time) {
+            $target_time = new DateTime('tomorrow ' . $hour, $timezone);
+        }
+        
+        return $target_time;
+    }
+
+    /**
+     * Verifica se é o horário correto para execução
+     */
+    public static function is_execution_time($configured_time = '02:00') {
+        $current_time = current_time('H:i');
+        return $current_time === $configured_time;
+    }
+
+    /**
+     * Obtém informações sobre o próximo agendamento
+     */
+    public function get_next_sync_info() {
+        $next_scheduled = wp_next_scheduled('art_image_daily_sync');
+        if (!$next_scheduled) {
+            return ['status' => 'not_scheduled', 'message' => 'Sincronização não agendada'];
+        }
+        
+        $timezone = wp_timezone();
+        $next_date = new DateTime('@' . $next_scheduled);
+        $next_date->setTimezone($timezone);
+        
+        return [
+            'status' => 'scheduled',
+            'next_run' => $next_date->format('Y-m-d H:i:s'),
+            'timezone' => wp_timezone_string(),
+            'timestamp' => $next_scheduled
+        ];
     }
 }
 

@@ -51,6 +51,7 @@ add_action('admin_init', function () {
         function () {
             $value = esc_attr(get_option('art_image_schedule_time', '02:00'));
             echo "<input type='time' name='art_image_schedule_time' value='$value' class='regular-text' />";
+            echo "<p class='description'>" . __('Horário será executado no fuso horário configurado no WordPress.', 'art-image') . "</p>";
         },
         'art_image_settings',
         'art_image_main_section'
@@ -121,7 +122,6 @@ add_action('admin_init', function () {
     );
 
     register_setting('art_image_settings_group', 'artimage_enable_cleanup');
-    register_setting('art_image_settings_group', 'artimage_cleanup_dry_run');
 
     add_settings_field(
         'artimage_enable_cleanup',
@@ -135,19 +135,5 @@ add_action('admin_init', function () {
         'art_image_settings',
         'art_image_sync_section',
         ['label_for' => 'artimage_enable_cleanup']
-    );
-
-    add_settings_field(
-        'artimage_cleanup_dry_run',
-        __('Modo de Teste (Dry Run)', 'art-image'),
-        function () {
-            $checked = checked(get_option('artimage_cleanup_dry_run', '0'), '1', false);
-            echo "<input type='checkbox' name='artimage_cleanup_dry_run' value='1' $checked /> ";
-            echo "<span>Apenas simular a remoção (não remover realmente)</span>";
-            echo "<p class='description'>Se ativado, a limpeza será apenas simulada e registrada nos logs, sem remover os itens.</p>";
-        },
-        'art_image_settings',
-        'art_image_sync_section',
-        ['label_for' => 'artimage_cleanup_dry_run']
     );
 });

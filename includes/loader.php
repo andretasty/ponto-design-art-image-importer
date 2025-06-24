@@ -10,6 +10,9 @@ if (!defined('ABSPATH')) {
 // Carrega a API primeiro
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/api-client.php';
 
+// Carrega funções auxiliares de fuso horário
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/timezone-helper.php';
+
 // Carrega o gerenciador de sincronização
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
 

@@ -29,6 +29,7 @@ function art_image_render_admin_page() {
     echo '<a href="?page=art-image&tab=discounts" class="nav-tab ' . ($active_tab === 'discounts' ? 'nav-tab-active' : '') . '">Descontos</a>';
     echo '<a href="?page=art-image&tab=manual_import" class="nav-tab ' . ($active_tab === 'manual_import' ? 'nav-tab-active' : '') . '">Importação Manual</a>';
     echo '<a href="?page=art-image&tab=sync_stats" class="nav-tab ' . ($active_tab === 'sync_stats' ? 'nav-tab-active' : '') . '">Estatísticas</a>';
+    echo '<a href="?page=art-image&tab=debug" class="nav-tab ' . ($active_tab === 'debug' ? 'nav-tab-active' : '') . '">Debug/Fuso Horário</a>';
     echo '</h2>';
 
     if ($active_tab === 'settings') {
@@ -131,6 +132,83 @@ function art_image_render_admin_page() {
         } else {
             echo '<p>Sistema de tracking não disponível.</p>';
         }
+        
+        echo '</div>';
+    }
+
+    if ($active_tab === 'debug') {
+        echo '<div class="art-image-admin">';
+        echo '<h3>Informações de Debug - Fuso Horário e Agendamentos</h3>';
+        
+        // Informações de fuso horário
+        $timezone_info = ArtImageTimezoneHelper::get_timezone_info();
+        echo '<div style="background: #f1f1f1; padding: 15px; border-radius: 4px; margin-bottom: 20px;">';
+        echo '<h4>Informações de Fuso Horário</h4>';
+        echo '<table class="widefat">';
+        echo '<tr><td><strong>Fuso Horário do WordPress:</strong></td><td><code>' . $timezone_info['timezone_string'] . '</code></td></tr>';
+        echo '<tr><td><strong>Hora Atual (WordPress):</strong></td><td><code>' . $timezone_info['current_time'] . '</code></td></tr>';
+        echo '<tr><td><strong>Hora do Servidor:</strong></td><td><code>' . $timezone_info['server_time'] . '</code></td></tr>';
+        echo '<tr><td><strong>GMT Offset:</strong></td><td><code>' . $timezone_info['gmt_offset'] . '</code></td></tr>';
+        echo '<tr><td><strong>É Horário de Brasília?:</strong></td><td>';
+        if ($timezone_info['is_brasilia']) {
+            echo '<span style="color: #00a32a;">✅ Sim</span>';
+        } else {
+            echo '<span style="color: #d63638;">❌ Não - <a href="' . admin_url('options-general.php') . '">Configurar para America/Sao_Paulo</a></span>';
+        }
+        echo '</td></tr>';
+        echo '</table>';
+        echo '</div>';
+        
+        // Informações de agendamentos
+        $scheduled_events = ArtImageTimezoneHelper::get_scheduled_events_info();
+        echo '<div style="background: #f1f1f1; padding: 15px; border-radius: 4px; margin-bottom: 20px;">';
+        echo '<h4>Próximos Agendamentos</h4>';
+        if (!empty($scheduled_events)) {
+            echo '<table class="widefat">';
+            foreach ($scheduled_events as $event) {
+                echo '<tr>';
+                echo '<td><strong>' . $event['name'] . ':</strong></td>';
+                echo '<td><code>' . $event['date'] . '</code></td>';
+                echo '<td><small>Hook: ' . $event['hook'] . '</small></td>';
+                echo '</tr>';
+            }
+            echo '</table>';
+        } else {
+            echo '<p style="color: #d63638;">⚠️ Nenhum evento agendado encontrado.</p>';
+        }
+        echo '</div>';
+        
+        // Configurações atuais
+        $schedule_time = get_option('art_image_schedule_time', '02:00');
+        echo '<div style="background: #f1f1f1; padding: 15px; border-radius: 4px; margin-bottom: 20px;">';
+        echo '<h4>Configurações de Agendamento</h4>';
+        echo '<table class="widefat">';
+        echo '<tr><td><strong>Horário Configurado:</strong></td><td><code>' . $schedule_time . '</code></td></tr>';
+        echo '<tr><td><strong>Próxima Execução Calculada:</strong></td><td>';
+        $next_exec = ArtImageTimezoneHelper::get_next_execution_time($schedule_time);
+        echo '<code>' . $next_exec->format('Y-m-d H:i:s T') . '</code>';
+        echo '</td></tr>';
+        echo '</table>';
+        echo '</div>';
+        
+        // Botões de ação
+        echo '<div style="background: #fff; padding: 15px; border: 1px solid #ddd; border-radius: 4px;">';
+        echo '<h4>Ações de Debug</h4>';
+        echo '<button class="button" onclick="location.reload()">Atualizar Informações</button> ';
+        echo '<button class="button" onclick="if(confirm(\'Deseja reagendar todos os eventos?\')) { 
+            fetch(ajaxurl, {
+                method: \'POST\',
+                headers: { \'Content-Type\': \'application/x-www-form-urlencoded\' },
+                body: new URLSearchParams({ 
+                    action: \'art_image_reschedule_all\', 
+                    _ajax_nonce: \'' . wp_create_nonce('art_image_nonce') . '\' 
+                })
+            }).then(res => res.json()).then(data => {
+                alert(data.success ? \'Eventos reagendados com sucesso!\' : \'Erro: \' + (data.data?.message || \'Erro desconhecido\'));
+                location.reload();
+            });
+        }">Reagendar Todos os Eventos</button>';
+        echo '</div>';
         
         echo '</div>';
     }
