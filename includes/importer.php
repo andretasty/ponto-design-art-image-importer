@@ -597,6 +597,11 @@ class ArtImageImporter
             $logs[] = "Nenhum produto encontrado para {$sub->name}.";
         }
         set_transient($queue_key, $product_queue, 12 * HOUR_IN_SECONDS);
+        
+        // Atualiza o total incrementalmente durante a preparação
+        $current_queue_size = is_array($product_queue) ? count($product_queue) : 0;
+        set_transient($total_key, $current_queue_size, 12 * HOUR_IN_SECONDS);
+        
         $logs[] = "Progresso: " . ($current_sub_index + 1) . "/" . count($subs) . " subcategorias.";
         return [
             'status' => 'preparing',

@@ -57,6 +57,9 @@ class ArtImageSyncManager {
         // Sincroniza categorias
         $this->sync_categories();
         
+        // Sincroniza subcategorias
+        $this->sync_subcategories();
+        
         // Sincroniza artistas
         $this->sync_artists();
         
@@ -106,21 +109,81 @@ class ArtImageSyncManager {
      * Sincroniza produtos
      */
     private function sync_products() {
+        $this->log('Iniciando sincronização de produtos...');
+        
+        // Limpa qualquer fila anterior para garantir uma nova preparação
+        delete_transient('artimage_product_import_queue');
+        delete_transient('artimage_product_processed_count');
+        delete_transient('artimage_product_import_total');
+        
         // Primeiro prepara a fila de produtos
         $current_sub_index = 0;
+        $max_subcategories = 200; // Limite de segurança aumentado
+        
+        $this->log('Preparando fila de produtos...');
         do {
             $result = $this->importer->prepare_product_import_queue_batch($current_sub_index);
-            $this->log('Preparando fila de produtos - subcategoria ' . $current_sub_index . ': ' . json_encode($result));
-            $current_sub_index++;
-        } while ($result['has_more'] && $result['status'] !== 'error');
+            $this->log('Preparando fila - índice ' . $current_sub_index . ', status: ' . ($result['status'] ?? 'unknown'));
+            
+            if (isset($result['current_sub_index'])) {
+                $current_sub_index = $result['current_sub_index'];
+            } else {
+                $current_sub_index++;
+            }
+            
+            // Proteção contra loop infinito
+            if ($current_sub_index > $max_subcategories) {
+                $this->log('AVISO: Limite de subcategorias atingido durante preparação');
+                break;
+            }
+            
+        } while (isset($result['has_more']) && $result['has_more'] === true && $result['status'] !== 'error' && $result['status'] !== 'cancelled');
+
+        // Verifica se a fila foi preparada
+        $queue_size = get_transient('artimage_product_import_total');
+        $this->log('Fila preparada com ' . $queue_size . ' produtos');
+        
+        if (!$queue_size || $queue_size == 0) {
+            $this->log('Nenhum produto na fila para processar');
+            return;
+        }
 
         // Depois processa os produtos
         $page = 1;
+        $batch_size = 5; // O mesmo tamanho de lote usado no loop
+        $max_pages = ceil($queue_size / $batch_size) + 10; // Calcula dinamicamente com uma margem de segurança
+        
+        $this->log('Iniciando processamento de produtos... Limite de páginas calculado: ' . $max_pages);
         do {
-            $result = $this->importer->import_products_batch($page);
-            $this->log('Processando produtos - página ' . $page . ': ' . json_encode($result));
-            $page++;
-        } while ($result['has_more'] && $result['status'] !== 'error');
+            $result = $this->importer->import_products_batch($page, $batch_size);
+            
+            $status = $result['status'] ?? 'unknown';
+            $has_more = isset($result['has_more']) ? $result['has_more'] : false;
+            $processed = $result['current_total_processed'] ?? 0;
+            $total = $result['total_to_import'] ?? 0;
+            
+            $this->log("Página {$page}: status={$status}, processados={$processed}/{$total}, has_more=" . ($has_more ? 'true' : 'false'));
+            
+            // Verifica se deve continuar
+            if ($has_more === true && $status === 'processing') {
+                $page++;
+            } else {
+                $this->log("Finalizando loop: status={$status}, has_more=" . ($has_more ? 'true' : 'false'));
+                break;
+            }
+            
+            // Proteção contra loop infinito
+            if ($page > $max_pages) {
+                $this->log('AVISO: Limite de páginas atingido durante processamento');
+                break;
+            }
+            
+            // Pequena pausa para não sobrecarregar
+            sleep(1);
+            
+        } while (true);
+        
+        $this->log('Sincronização de produtos concluída');
     }
 
     /**

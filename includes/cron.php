@@ -4,93 +4,92 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Cron Job: executa importação diária no horário configurado
+ * Funções relacionadas ao WP-Cron para importações automáticas
  */
 
-add_action('init', 'art_image_schedule_cron');
-add_action('art_image_daily_event', 'art_image_run_scheduled_import');
-add_action('update_option_art_image_schedule_time', 'art_image_reschedule_cron', 10, 2);
-
-/**
- * Agenda um evento a cada 5 minutos para checagem
- */
-function art_image_schedule_cron() {
-    if (!wp_next_scheduled('art_image_daily_event')) {
-        wp_schedule_event(time(), 'every_five_minutes', 'art_image_daily_event');
-    }
-}
-
-/**
- * Executa a importação se a hora atual bater com a configurada
- */
-function art_image_run_scheduled_import() {
-    $configured_time = get_option('art_image_schedule_time', '02:00');
-
-    if (!$configured_time) {
-        art_image_log_cron('Horário não configurado, pulando execução');
-        return;
-    }
-
-    $current_time = current_time('H:i');
-    $timezone_name = wp_timezone_string();
-    
-    // Log para debug
-    art_image_log_cron("Verificando horário: atual={$current_time}, configurado={$configured_time}, timezone={$timezone_name}");
-    
-    if ($current_time !== $configured_time) {
-        return;
-    }
-
-    art_image_log_cron('Iniciando importação agendada...');
-    
-    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
-    
-    try {
-        art_image_import_categories();
-        art_image_import_products();
-        art_image_import_artists();
-        art_image_log_cron('Importação agendada concluída com sucesso');
-    } catch (Exception $e) {
-        art_image_log_cron('Erro na importação agendada: ' . $e->getMessage());
-    }
-}
-
-/**
- * Função auxiliar para logging do cron
- */
-function art_image_log_cron($message) {
-    $timestamp = current_time('Y-m-d H:i:s');
-    $timezone_name = wp_timezone_string();
-    $log_file = WP_CONTENT_DIR . '/art-image-cron.log';
-    $log_message = "[{$timestamp} {$timezone_name}] CRON: {$message}\n";
-    error_log($log_message, 3, $log_file);
-}
-
-/**
- * Reagenda cron ao mudar o horário de execução
- */
-function art_image_reschedule_cron($old_value, $new_value) {
-    if ($old_value === $new_value) return;
-
-    art_image_log_cron("Reagendando cron: horário alterado de {$old_value} para {$new_value}");
-
-    $timestamp = wp_next_scheduled('art_image_daily_event');
-    if ($timestamp) {
-        wp_unschedule_event($timestamp, 'art_image_daily_event');
-        art_image_log_cron('Evento anterior cancelado');
-    }
-
-    wp_schedule_event(time(), 'every_five_minutes', 'art_image_daily_event');
-    art_image_log_cron('Novo evento de verificação agendado');
-}
-
-/**
- * Adiciona intervalo customizado de 5 minutos (para checagem)
- */
-add_filter('cron_schedules', function ($schedules) {
-    $schedules['every_five_minutes'] = [
+// Adiciona um intervalo de 5 minutos para testes
+add_filter('cron_schedules', 'art_image_add_every_five_minutes');
+function art_image_add_every_five_minutes($schedules) {
+    $schedules['every_five_minutes'] = array(
         'interval' => 300,
-        'display' => __('A cada 5 minutos')
-    ];
+        'display'  => __('Every 5 Minutes')
+    );
     return $schedules;
-});
+}
+
+// Hook para o evento diário
+add_action('art_image_daily_event', 'art_image_run_daily_import');
+
+/**
+ * Função principal que executa a importação diária completa.
+ * Modificada para rodar em um loop contínuo no servidor.
+ */
+function art_image_run_daily_import() {
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/timezone-helper.php';
+
+    ArtImageTimezoneHelper::log_with_timezone("Iniciando rotina de importação automática via cron.");
+
+    $importer = new ArtImageImporter();
+    
+    // As importações de categorias, subcategorias e artistas são geralmente rápidas
+    // e podem ser executadas em um único lote grande.
+    ArtImageTimezoneHelper::log_with_timezone("Iniciando importação de categorias...");
+    $importer->import_categories(1, 1000); // Tenta importar todas de uma vez
+
+    ArtImageTimezoneHelper::log_with_timezone("Iniciando importação de subcategorias...");
+    $importer->import_subcategories(1, 1000); // Tenta importar todas de uma vez
+    
+    ArtImageTimezoneHelper::log_with_timezone("Iniciando importação de artistas...");
+    $importer->import_artists(1, 1000); // Tenta importar todos de uma vez
+
+    ArtImageTimezoneHelper::log_with_timezone("Iniciando importação de produtos em loop...");
+
+    $page = 1;
+    $max_pages = 200; // Prevenção de loop infinito (ex: 200 * 5 = 1000 produtos)
+    $has_more = true;
+
+    do {
+        ArtImageTimezoneHelper::log_with_timezone("Processando lote de produtos, página {$page}...");
+        
+        // A função import_products_batch prepara a fila na primeira página se necessário
+        $result = $importer->import_products_batch($page, 5); // Processa 5 produtos por lote
+
+        if (isset($result['has_more']) && $result['has_more'] === true) {
+            $has_more = true;
+            $page++;
+        } else {
+            $has_more = false;
+        }
+
+        if ($page > $max_pages) {
+            ArtImageTimezoneHelper::log_with_timezone("Atingido o limite máximo de páginas ({$max_pages}). Interrompendo o cron para evitar loop infinito.");
+            break;
+        }
+
+        // Pequena pausa para não sobrecarregar o servidor
+        sleep(2);
+
+    } while ($has_more);
+
+    ArtImageTimezoneHelper::log_with_timezone("Rotina de importação automática via cron finalizada.");
+}
+
+/**
+ * Função chamada na ativação do plugin para agendar o evento
+ */
+function art_image_schedule_daily_event() {
+    $schedule_time = get_option('art_image_schedule_time', '02:00');
+    if (!wp_next_scheduled('art_image_daily_event')) {
+        ArtImageTimezoneHelper::schedule_event('art_image_daily_event', $schedule_time, 'daily');
+    }
+}
+register_activation_hook(ART_IMAGE_PLUGIN_FILE, 'art_image_schedule_daily_event');
+
+/**
+ * Função chamada na desativação do plugin para limpar o agendamento
+ */
+function art_image_unschedule_daily_event() {
+    wp_clear_scheduled_hook('art_image_daily_event');
+}
+register_deactivation_hook(ART_IMAGE_PLUGIN_FILE, 'art_image_unschedule_daily_event');
