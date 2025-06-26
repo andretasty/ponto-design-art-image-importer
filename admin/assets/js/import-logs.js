@@ -246,10 +246,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (!isImporting) { 
                     displayActiveImports(response.data.active_import_type);
                 } else if (isImporting && !response.data.active_import_type) {
-                    appendLog("Aviso: O servidor não reporta nenhum processo ativo, mas esta aba indica uma importação em andamento. Verificando o estado local.");
-                    // If local import was cancelled, resetState would have been called.
-                    // If it's still 'isImporting=true' but server says no lock, it might be a stale local state.
-                    // However, the import loop itself should handle its termination.
+                    // A importação pode ter acabado de terminar (o servidor limpou o lock, mas o cliente ainda não fez o resetState que tem um delay).
+                    // Para evitar falsos positivos, esperamos um pouco mais que o delay do resetState antes de exibir o aviso.
+                    setTimeout(() => {
+                        // Se, após a espera, a aba AINDA acha que está importando, então é um estado obsoleto real.
+                        if (isImporting) {
+                            appendLog("Aviso: O servidor não reporta nenhum processo ativo, mas esta aba indica uma importação em andamento. Verificando o estado local.");
+                        }
+                    }, 4000); // O resetState tem um delay de 3s no sucesso. 4s é seguro.
                 }
             }
         })

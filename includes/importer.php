@@ -515,6 +515,7 @@ class ArtImageImporter
         // Limpa o flag de cancelamento apenas no início da preparação
         if ($current_sub_index == 0) {
             delete_transient($cancel_flag_key);
+            delete_transient($processed_key);
         }
         if (get_transient($cancel_flag_key)) {
             delete_transient($subs_list_key);
@@ -630,7 +631,6 @@ class ArtImageImporter
             set_transient($master_lock_key, 'products', 12 * HOUR_IN_SECONDS);
             set_transient($batch_lock_key, 1, 12 * HOUR_IN_SECONDS);
             delete_transient($cancel_flag_key);
-            delete_transient($total_key); // Clear previous total
             
             // Inicia nova sessão de sincronização
             if ($artimage_sync_tracker) {
@@ -702,7 +702,6 @@ class ArtImageImporter
             // Limpar transients da importação de produtos
             delete_transient($queue_key);
             delete_transient($processed_key);
-            delete_transient($total_key);
             delete_transient($batch_lock_key);
             if (get_transient($master_lock_key) === 'products') {
                 delete_transient($master_lock_key);
@@ -873,7 +872,6 @@ class ArtImageImporter
             // Limpar transients da importação de produtos
             delete_transient($queue_key);
             delete_transient($processed_key);
-            delete_transient($total_key);
             delete_transient($batch_lock_key);
             if (get_transient($master_lock_key) === 'products') {
                 delete_transient($master_lock_key);
@@ -1142,23 +1140,23 @@ class ArtImageImporter
     // --- AJAX Cancellation Handlers ---
 
     public function ajax_cancel_categories_import() {
-        set_transient('artimage_cancel_category_import_flag', true, 1 * HOUR_IN_SECONDS);
-        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de categorias recebida.']);
+        $this->cleanup_import('categories');
+        wp_send_json_success(['message' => 'Importação de categorias cancelada com sucesso.']);
     }
 
     public function ajax_cancel_subcategories_import() {
-        set_transient('artimage_cancel_subcategory_import_flag', true, 1 * HOUR_IN_SECONDS);
-        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de subcategorias recebida.']);
+        $this->cleanup_import('subcategories');
+        wp_send_json_success(['message' => 'Importação de subcategorias cancelada com sucesso.']);
     }
 
     public function ajax_cancel_artists_import() {
-        set_transient('artimage_cancel_artist_import_flag', true, 1 * HOUR_IN_SECONDS);
-        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de artistas recebida.']);
+        $this->cleanup_import('artists');
+        wp_send_json_success(['message' => 'Importação de artistas cancelada com sucesso.']);
     }
 
     public function ajax_cancel_products_import() {
-        set_transient('artimage_cancel_product_import_flag', true, 1 * HOUR_IN_SECONDS);
-        wp_send_json_success(['message' => 'Solicitação de cancelamento de importação de produtos recebida.']);
+        $this->cleanup_import('products');
+        wp_send_json_success(['message' => 'Importação de produtos cancelada com sucesso.']);
     }
 
     /**
