@@ -4,249 +4,367 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Gerenciador de sincronização completa do site
+ * Gerenciador de sincronização completa do site - Versão Refatorada para CRON
  */
 class ArtImageSyncManager {
     private $importer;
     private $log_file;
 
+    const SYNC_STEP_OPTION = 'artimage_current_sync_step';
+    const SYNC_PAGE_OPTION = 'artimage_current_sync_page';
+    const LOCK_OPTION = 'artimage_sync_lock';
+    const LOCK_TIMEOUT = 3600; // 1 hora de timeout
+
     public function __construct() {
         $this->importer = new ArtImageImporter();
         $this->log_file = WP_CONTENT_DIR . '/art-image-sync.log';
         
-        // Registra o evento de sincronização
-        add_action('init', array($this, 'schedule_sync'));
-        add_action('art_image_daily_sync', array($this, 'run_sync'));
+        add_action('art_image_daily_sync', array($this, 'trigger_sync_start'));
+        add_action('art_image_run_sync_step', array($this, 'run_sync_step'));
     }
 
     /**
-     * Agenda a sincronização diária
+     * Verifica se o lock está ativo e válido
      */
-    public function schedule_sync() {
-        if (!wp_next_scheduled('art_image_daily_sync')) {
-            // Calcula o próximo horário de execução considerando o fuso horário do WordPress
-            $timezone = wp_timezone();
-            $now = new DateTime('now', $timezone);
-            $next_run = new DateTime('tomorrow 02:00:00', $timezone);
-            
-            // Se já passou das 02:00 hoje, agenda para amanhã
-            if ($now->format('H:i') >= '02:00') {
-                $next_run = new DateTime('tomorrow 02:00:00', $timezone);
-            } else {
-                // Se ainda não passou das 02:00, agenda para hoje
-                $next_run = new DateTime('today 02:00:00', $timezone);
-            }
-            
-            // Converte para timestamp UTC para o WordPress
-            $timestamp = $next_run->getTimestamp();
-            
-            // Agenda para rodar todos os dias às 02:00 (horário de Brasília)
-            wp_schedule_event($timestamp, 'daily', 'art_image_daily_sync');
-            
-            // Log para debug
-            $this->log('Sincronização agendada para: ' . $next_run->format('Y-m-d H:i:s T'));
+    private function is_lock_active() {
+        $lock = get_option(self::LOCK_OPTION, false);
+        
+        if (!$lock) {
+            return false;
         }
+        
+        // Verifica se o lock expirou
+        if (is_numeric($lock) && (time() - $lock) > self::LOCK_TIMEOUT) {
+            $this->log("Lock expirado detectado (criado há " . (time() - $lock) . " segundos). Removendo...");
+            delete_option(self::LOCK_OPTION);
+            return false;
+        }
+        
+        return true;
     }
 
     /**
-     * Executa a sincronização completa
+     * Inicia a sincronização completa, definindo o primeiro passo.
      */
-    public function run_sync() {
-        $this->log('Iniciando sincronização...');
-        
-        // Sincroniza categorias
-        $this->sync_categories();
-        
-        // Sincroniza subcategorias
-        $this->sync_subcategories();
-        
-        // Sincroniza artistas
-        $this->sync_artists();
-        
-        // Sincroniza produtos
-        $this->sync_products();
-        
-        $this->log('Sincronização concluída.');
-    }
-
-    /**
-     * Sincroniza categorias principais
-     */
-    private function sync_categories() {
-        $page = 1;
-        do {
-            $result = $this->importer->import_categories($page);
-            $this->log('Processando categorias - página ' . $page . ': ' . json_encode($result));
-            $page++;
-        } while ($result['has_more'] && $result['status'] !== 'error');
-    }
-
-    /**
-     * Sincroniza subcategorias
-     */
-    private function sync_subcategories() {
-        $page = 1;
-        do {
-            $result = $this->importer->import_subcategories($page);
-            $this->log('Processando subcategorias - página ' . $page . ': ' . json_encode($result));
-            $page++;
-        } while ($result['has_more'] && $result['status'] !== 'error');
-    }
-
-    /**
-     * Sincroniza artistas
-     */
-    private function sync_artists() {
-        $page = 1;
-        do {
-            $result = $this->importer->import_artists($page);
-            $this->log('Processando artistas - página ' . $page . ': ' . json_encode($result));
-            $page++;
-        } while ($result['has_more'] && $result['status'] !== 'error');
-    }
-
-    /**
-     * Sincroniza produtos
-     */
-    private function sync_products() {
-        $this->log('Iniciando sincronização de produtos...');
-        
-        // Limpa qualquer fila anterior para garantir uma nova preparação
-        delete_transient('artimage_product_import_queue');
-        delete_transient('artimage_product_processed_count');
-        delete_transient('artimage_product_import_total');
-        
-        // Primeiro prepara a fila de produtos
-        $current_sub_index = 0;
-        $max_subcategories = 200; // Limite de segurança aumentado
-        
-        $this->log('Preparando fila de produtos...');
-        do {
-            $result = $this->importer->prepare_product_import_queue_batch($current_sub_index);
-            $this->log('Preparando fila - índice ' . $current_sub_index . ', status: ' . ($result['status'] ?? 'unknown'));
-            
-            if (isset($result['current_sub_index'])) {
-                $current_sub_index = $result['current_sub_index'];
-            } else {
-                $current_sub_index++;
-            }
-            
-            // Proteção contra loop infinito
-            if ($current_sub_index > $max_subcategories) {
-                $this->log('AVISO: Limite de subcategorias atingido durante preparação');
-                break;
-            }
-            
-        } while (isset($result['has_more']) && $result['has_more'] === true && $result['status'] !== 'error' && $result['status'] !== 'cancelled');
-
-        // Verifica se a fila foi preparada
-        $queue_size = get_transient('artimage_product_import_total');
-        $this->log('Fila preparada com ' . $queue_size . ' produtos');
-        
-        if (!$queue_size || $queue_size == 0) {
-            $this->log('Nenhum produto na fila para processar');
+    public function trigger_sync_start() {
+        // Evita múltiplas execuções simultâneas
+        if ($this->is_lock_active()) {
+            $lock_time = get_option(self::LOCK_OPTION, 'desconhecido');
+            $this->log("Tentativa de iniciar sincronização enquanto outra já está em andamento. Lock criado em: " . date('Y-m-d H:i:s', $lock_time));
             return;
         }
 
-        // Depois processa os produtos
-        $page = 1;
-        $batch_size = 5; // O mesmo tamanho de lote usado no loop
-        $max_pages = ceil($queue_size / $batch_size) + 10; // Calcula dinamicamente com uma margem de segurança
+        $this->log("Sincronização diária iniciada.");
+        update_option(self::LOCK_OPTION, time());
+
+        // Limpa qualquer estado anterior
+        delete_option(self::SYNC_STEP_OPTION);
+        delete_option(self::SYNC_PAGE_OPTION);
+
+        $this->set_sync_step('categories', 1);
+        $this->log("Passo inicial definido: categories, página 1");
         
-        $this->log('Iniciando processamento de produtos... Limite de páginas calculado: ' . $max_pages);
-        do {
-            $result = $this->importer->import_products_batch($page, $batch_size);
-            
-            $status = $result['status'] ?? 'unknown';
-            $has_more = isset($result['has_more']) ? $result['has_more'] : false;
-            $processed = $result['current_total_processed'] ?? 0;
-            $total = $result['total_to_import'] ?? 0;
-            
-            $this->log("Página {$page}: status={$status}, processados={$processed}/{$total}, has_more=" . ($has_more ? 'true' : 'false'));
-            
-            // Verifica se deve continuar
-            if ($has_more === true && $status === 'processing') {
-                $page++;
-            } else {
-                $this->log("Finalizando loop: status={$status}, has_more=" . ($has_more ? 'true' : 'false'));
-                break;
-            }
-            
-            // Proteção contra loop infinito
-            if ($page > $max_pages) {
-                $this->log('AVISO: Limite de páginas atingido durante processamento');
-                break;
-            }
-            
-            // Pequena pausa para não sobrecarregar
-            sleep(1);
-            
-        } while (true);
+        $this->schedule_next_step();
+    }
+    
+    /**
+     * Define o passo e a página atual da sincronização.
+     */
+    private function set_sync_step($step, $page = 1) {
+        update_option(self::SYNC_STEP_OPTION, $step);
+        update_option(self::SYNC_PAGE_OPTION, $page);
+        $this->log("Passo definido: {$step}, página: {$page}");
+    }
+    
+    /**
+     * Agenda a próxima execução do processo de sincronização.
+     */
+    private function schedule_next_step($delay_in_seconds = 2) {
+        $next_time = time() + $delay_in_seconds;
+        $result = wp_schedule_single_event($next_time, 'art_image_run_sync_step');
         
-        $this->log('Sincronização de produtos concluída');
+        if ($result === false) {
+            $this->log("ERRO: Falha ao agendar próximo passo com wp_schedule_single_event. Tentando execução imediata.");
+            // Fallback: executa imediatamente se o agendamento falhar
+            wp_schedule_single_event(time() + 1, 'art_image_run_sync_step');
+        } else {
+            $this->log("Próximo passo agendado para: " . date('Y-m-d H:i:s', $next_time) . " (" . $delay_in_seconds . "s)");
+        }
+        
+        // Força verificação de cron
+        spawn_cron();
     }
 
     /**
-     * Registra mensagem no log
+     * Executa o processo de sincronização em um loop contínuo com controle de tempo.
+     */
+    public function run_sync_step() {
+        $start_time = time();
+        $time_limit = apply_filters('art_image_sync_time_limit', 45); // 45 segundos por padrão
+
+        // Verifica se há um lock ativo antes de executar
+        if (!$this->is_lock_active()) {
+            $this->log("Nenhum lock ativo encontrado ao executar run_sync_step. Abortando.");
+            $this->clear_pending_events();
+            return;
+        }
+
+        $this->log("=== INICIO DO CICLO DE SINCRONIZAÇÃO (Limite: {$time_limit}s) ===");
+        
+        while ((time() - $start_time) < $time_limit) {
+            $step = get_option(self::SYNC_STEP_OPTION, 'done');
+            $page = (int) get_option(self::SYNC_PAGE_OPTION, 1);
+        
+            if ($step === 'done') {
+                $this->log("Ciclo de sincronização finalizado. Nenhum passo a executar.");
+                $this->complete_sync();
+                return; // Encerra o loop e a função
+            }
+            
+        $this->log("Executando passo: '{$step}', página: {$page}");
+
+            $result = false;
+            try {
+        switch ($step) {
+            case 'categories':
+                        $result = $this->importer->import_categories($page, 1000);
+                        $this->handle_step_result($result, 'subcategories', 'Categorias');
+                break;
+            case 'subcategories':
+                        $result = $this->importer->import_subcategories($page, 1000);
+                        $this->handle_step_result($result, 'artists', 'Subcategorias');
+                break;
+            case 'artists':
+                        $result = $this->importer->import_artists($page, 1000);
+                        $this->handle_step_result($result, 'prepare_products', 'Artistas');
+                break;
+            case 'prepare_products':
+                        $result = $this->importer->prepare_product_import_queue_batch($page);
+                         $this->handle_product_prep_result($result);
+                break;
+            case 'products':
+                         $result = $this->importer->import_products_batch($page, 5);
+                         $this->handle_step_result($result, 'done', 'Produtos');
+                break;
+            default:
+                        $this->log("Passo desconhecido '{$step}'. Finalizando.");
+                        $this->set_sync_step('done');
+                        break;
+                }
+            } catch (Exception $e) {
+                $this->log("ERRO CRÍTICO durante o passo '{$step}': " . $e->getMessage());
+                $this->complete_sync(true); // Finaliza com erro
+                return; // Encerra o loop
+            }
+        }
+        
+        $this->log("=== FIM DO CICLO DE SINCRONIZAÇÃO (Limite de tempo atingido) ===");
+        $this->log("O processo continuará na próxima execução do cron.");
+        $this->schedule_next_step(5); // Agenda para continuar na próxima janela
+    }
+    
+    /**
+     * Manipula o resultado de um passo de importação padrão.
+     */
+    private function handle_step_result($result, $next_step_name, $log_name) {
+        $this->log("Resultado de {$log_name}: " . json_encode($result));
+        
+        $current_step = get_option(self::SYNC_STEP_OPTION);
+        $current_page = (int) get_option(self::SYNC_PAGE_OPTION, 1);
+
+            if (!empty($result['has_more']) && $result['status'] === 'processing') {
+            $this->set_sync_step($current_step, $current_page + 1);
+            } else {
+            $this->log("Finalizada a importação de {$log_name}. Próximo passo: {$next_step_name}");
+            $this->set_sync_step($next_step_name, 1);
+        }
+    }
+
+    /**
+     * Manipula o resultado do passo de preparação de produtos.
+     */
+    private function handle_product_prep_result($result) {
+        $this->log("Resultado da preparação de produtos: " . json_encode($result));
+
+        if (!empty($result['has_more']) && $result['status'] === 'preparing') {
+            $this->set_sync_step('prepare_products', $result['current_sub_index']);
+        } else {
+            $queue_size = get_transient('artimage_product_import_total');
+            $this->log("Preparação da fila de produtos concluída. Total: {$queue_size} produtos. Próximo passo: products");
+            $this->set_sync_step('products', 1);
+        }
+    }
+    
+    /**
+     * Agenda o evento principal se não existir.
+     */
+    public static function schedule_daily_sync() {
+        if (!wp_next_scheduled('art_image_daily_sync')) {
+            $schedule_time = get_option('art_image_schedule_time', '02:00');
+            $timestamp = ArtImageTimezoneHelper::get_next_execution_time($schedule_time)->getTimestamp();
+            
+            wp_schedule_event($timestamp, 'daily', 'art_image_daily_sync');
+            error_log('Sincronização diária agendada para: ' . date('Y-m-d H:i:s', $timestamp));
+        }
+    }
+
+    /**
+     * Método para forçar execução imediata (para debug)
+     */
+    public function force_immediate_execution() {
+        $this->log("=== EXECUÇÃO FORÇADA INICIADA ===");
+        
+        // Verifica se há um processo em andamento
+        $current_step = get_option(self::SYNC_STEP_OPTION, 'none');
+        $current_page = get_option(self::SYNC_PAGE_OPTION, 1);
+        
+        $this->log("Estado atual: step='{$current_step}', page={$current_page}");
+        
+        if ($current_step === 'none' || $current_step === 'done') {
+            $this->log("Nenhum processo em andamento. Iniciando novo processo...");
+            $this->trigger_sync_start();
+        } else {
+            $this->log("Processo em andamento detectado. Continuando do passo atual...");
+            $this->run_sync_step();
+        }
+    }
+    
+    /**
+     * Testa se o WP-Cron está funcionando
+     */
+    public function test_wp_cron() {
+        $test_hook = 'art_image_cron_test';
+        $test_time = time() + 30; // 30 segundos no futuro
+        
+        // Remove qualquer teste anterior
+        wp_clear_scheduled_hook($test_hook);
+        
+        // Agenda teste
+        $result = wp_schedule_single_event($test_time, $test_hook);
+        
+        if ($result === false) {
+            $this->log("ERRO: wp_schedule_single_event falhou no teste");
+            return false;
+        }
+        
+        // Verifica se foi agendado
+        $scheduled = wp_next_scheduled($test_hook);
+        if (!$scheduled) {
+            $this->log("ERRO: Evento de teste não foi agendado corretamente");
+            return false;
+        }
+        
+        $this->log("Teste de WP-Cron agendado para: " . date('Y-m-d H:i:s', $scheduled));
+        
+        // Limpa o teste
+        wp_unschedule_event($scheduled, $test_hook);
+        
+        return true;
+    }
+
+    /**
+     * Completa a sincronização e limpa os recursos
+     */
+    private function complete_sync($error = false) {
+        if ($error) {
+            $this->log("Sincronização finalizada com ERRO.");
+        } else {
+            $this->log("Processo finalizado com sucesso.");
+        }
+        
+        delete_option(self::LOCK_OPTION);
+        delete_option(self::SYNC_STEP_OPTION);
+        delete_option(self::SYNC_PAGE_OPTION);
+        
+        // Limpa qualquer evento pendente
+        $this->clear_pending_events();
+        
+        $this->log("Lock e estado de sincronização limpos.");
+        
+        // Garante que o próximo evento diário está agendado
+        if (!$error) {
+            self::schedule_daily_sync();
+            $next_scheduled = wp_next_scheduled('art_image_daily_sync');
+            if ($next_scheduled) {
+                $this->log("Próxima sincronização agendada para: " . date('Y-m-d H:i:s', $next_scheduled));
+            }
+        }
+    }
+
+    /**
+     * Limpa eventos pendentes de sincronização
+     */
+    private function clear_pending_events() {
+        $timestamp = wp_next_scheduled('art_image_run_sync_step');
+        while ($timestamp) {
+            wp_unschedule_event($timestamp, 'art_image_run_sync_step');
+            $timestamp = wp_next_scheduled('art_image_run_sync_step');
+        }
+    }
+
+    /**
+     * Registra mensagem no log.
      */
     private function log($message) {
-        $timestamp = current_time('Y-m-d H:i:s');
-        $timezone_name = wp_timezone_string();
-        $log_message = "[{$timestamp} {$timezone_name}] {$message}\n";
-        error_log($log_message, 3, $this->log_file);
+        $timestamp = date('Y-m-d H:i:s');
+        $message_with_timestamp = "[{$timestamp}] {$message}";
+        error_log($message_with_timestamp . "\n", 3, $this->log_file);
+        
+        // Também registra no log de importação regular
+        ArtImageTimezoneHelper::log_with_timezone($message);
     }
 
     /**
-     * Obtém o próximo horário de execução no fuso horário correto
+     * Limpa lock e estado (para uso administrativo)
      */
-    public static function get_next_execution_time($hour = '02:00') {
-        $timezone = wp_timezone();
-        $now = new DateTime('now', $timezone);
-        $target_time = new DateTime('today ' . $hour, $timezone);
+    public function force_clear_lock() {
+        $this->log("=== LIMPEZA FORÇADA DE LOCK ===");
+        $this->complete_sync();
+        return true;
+    }
+
+    /**
+     * Remove todos os eventos legacy e garante configuração correta
+     */
+    public static function cleanup_legacy_events() {
+        $log_message = "=== LIMPEZA DE EVENTOS LEGACY ===\n";
         
-        // Se já passou do horário hoje, agenda para amanhã
-        if ($now >= $target_time) {
-            $target_time = new DateTime('tomorrow ' . $hour, $timezone);
+        // Remove eventos do sistema antigo (cron.php)
+        $timestamp = wp_next_scheduled('art_image_daily_event');
+        $count = 0;
+        while ($timestamp) {
+            wp_unschedule_event($timestamp, 'art_image_daily_event');
+            $count++;
+            $timestamp = wp_next_scheduled('art_image_daily_event');
+        }
+        if ($count > 0) {
+            $log_message .= "Removidos {$count} eventos 'art_image_daily_event'\n";
         }
         
-        return $target_time;
-    }
-
-    /**
-     * Verifica se é o horário correto para execução
-     */
-    public static function is_execution_time($configured_time = '02:00') {
-        $current_time = current_time('H:i');
-        return $current_time === $configured_time;
-    }
-
-    /**
-     * Obtém informações sobre o próximo agendamento
-     */
-    public function get_next_sync_info() {
-        $next_scheduled = wp_next_scheduled('art_image_daily_sync');
-        if (!$next_scheduled) {
-            return ['status' => 'not_scheduled', 'message' => 'Sincronização não agendada'];
+        // Remove qualquer hook registrado para o evento legacy
+        remove_all_actions('art_image_daily_event');
+        
+        // Garante que o evento correto está agendado
+        if (!wp_next_scheduled('art_image_daily_sync')) {
+            self::schedule_daily_sync();
+            $log_message .= "Evento 'art_image_daily_sync' reagendado corretamente\n";
+        } else {
+            $log_message .= "Evento 'art_image_daily_sync' já está agendado\n";
         }
         
-        $timezone = wp_timezone();
-        $next_date = new DateTime('@' . $next_scheduled);
-        $next_date->setTimezone($timezone);
+        ArtImageTimezoneHelper::log_with_timezone($log_message);
         
-        return [
-            'status' => 'scheduled',
-            'next_run' => $next_date->format('Y-m-d H:i:s'),
-            'timezone' => wp_timezone_string(),
-            'timestamp' => $next_scheduled
-        ];
+        return $log_message;
     }
 }
 
-// Inicializa o gerenciador de sincronização
-function art_image_init_sync_manager() {
+// Inicializa o gerenciador
+add_action('plugins_loaded', function() {
     new ArtImageSyncManager();
-}
-add_action('plugins_loaded', 'art_image_init_sync_manager');
+});
+
+// Adiciona o agendamento na ativação do plugin ou ao verificar
+add_action('init', ['ArtImageSyncManager', 'schedule_daily_sync']);
 
 // Função para executar a sincronização manualmente
 function art_image_run_sync() {

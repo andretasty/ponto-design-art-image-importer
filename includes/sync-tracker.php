@@ -13,7 +13,10 @@ class ArtImageSyncTracker {
     private $current_sync_id;
     
     public function __construct() {
-        $this->current_sync_id = time(); // Timestamp único para esta sessão de sync
+        $this->current_sync_id = get_option('artimage_current_sync_id', null);
+        if (!$this->current_sync_id) {
+            $this->current_sync_id = time(); // Fallback if not set
+        }
     }
     
     /**

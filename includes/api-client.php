@@ -13,11 +13,14 @@ class ArtImageApiClient
 
     private $email;
     private $password;
+    private $timeout = 30; // Timeout padrão
 
     public function __construct()
     {
         $this->email    = get_option('art_image_email');
         $this->password = get_option('art_image_password');
+        // Permite configurar timeout via filtro
+        $this->timeout = apply_filters('art_image_api_timeout', 30);
     }
 
     /**
@@ -49,6 +52,7 @@ class ArtImageApiClient
         ]);
 
         if (is_wp_error($response)) {
+            art_image_log_import_error('API', 'Erro ao verificar validade dos cookies: ' . $response->get_error_message());
             return false;
         }
 
@@ -67,11 +71,17 @@ class ArtImageApiClient
             'headers' => ['User-Agent' => $this->user_agent()],
         ]);
 
-        if (is_wp_error($step1)) return false;
+        if (is_wp_error($step1)) {
+            art_image_log_import_error('API', 'Erro no login - Etapa 1: ' . $step1->get_error_message());
+            return false;
+        }
 
         $html   = wp_remote_retrieve_body($step1);
         preg_match('/var CSRF_TOKEN = "([^"]+)";/', $html, $matches);
-        if (empty($matches[1])) return false;
+        if (empty($matches[1])) {
+            art_image_log_import_error('API', 'CSRF Token não encontrado');
+            return false;
+        }
         $csrf_token = $matches[1];
         $cookies1   = wp_remote_retrieve_cookies($step1);
         $cookie_str1 = $this->format_cookies($cookies1);
@@ -94,11 +104,17 @@ class ArtImageApiClient
             ],
         ]);
 
-        if (is_wp_error($step2)) return false;
+        if (is_wp_error($step2)) {
+            art_image_log_import_error('API', 'Erro no login - Etapa 2: ' . $step2->get_error_message());
+            return false;
+        }
 
         $json = json_decode(wp_remote_retrieve_body($step2), true);
         $jwt  = $json['result']['token'] ?? $json['token'] ?? null;
-        if (!$jwt) return false;
+        if (!$jwt) {
+            art_image_log_import_error('API', 'JWT Token não encontrado na resposta de login', $json);
+            return false;
+        }
 
         $cookies2   = wp_remote_retrieve_cookies($step2);
         $all_cookies = array_merge($cookies1, $cookies2);
@@ -114,7 +130,10 @@ class ArtImageApiClient
             ],
         ]);
 
-        if (is_wp_error($step3)) return false;
+        if (is_wp_error($step3)) {
+            art_image_log_import_error('API', 'Erro no login - Etapa 3: ' . $step3->get_error_message());
+            return false;
+        }
 
         $body = wp_remote_retrieve_body($step3);
         if (strpos($body, 'login/logout') !== false) {
@@ -152,16 +171,22 @@ class ArtImageApiClient
     public function get_main_categories()
     {
         $cookies = $this->get_authenticated_cookies();
-        if (!$cookies) return [];
+        if (!$cookies) {
+            art_image_log_import_error('API', 'Falha na autenticação ao buscar categorias');
+            return [];
+        }
 
         $cookie_header = $this->format_cookies($cookies);
 
         $response = wp_remote_get('https://artimage.com.br/produtos/art-gallery', [
             'headers' => ['Cookie' => $cookie_header],
-            'timeout' => 30,
+            'timeout' => $this->timeout,
         ]);
 
-        if (is_wp_error($response)) return [];
+        if (is_wp_error($response)) {
+            art_image_log_import_error('API', 'Erro ao buscar categorias principais: ' . $response->get_error_message());
+            return [];
+        }
 
         $html = wp_remote_retrieve_body($response);
 
@@ -190,16 +215,22 @@ class ArtImageApiClient
     public function get_subcategories($main_category_url)
     {
         $cookies = $this->get_authenticated_cookies();
-        if (!$cookies) return [];
+        if (!$cookies) {
+            art_image_log_import_error('API', 'Falha na autenticação ao buscar subcategorias');
+            return [];
+        }
 
         $cookie_header = $this->format_cookies($cookies);
 
         $response = wp_remote_get($main_category_url, [
             'headers' => ['Cookie' => $cookie_header],
-            'timeout' => 30,
+            'timeout' => $this->timeout,
         ]);
 
-        if (is_wp_error($response)) return [];
+        if (is_wp_error($response)) {
+            art_image_log_import_error('API', 'Erro ao buscar subcategorias de ' . $main_category_url . ': ' . $response->get_error_message());
+            return [];
+        }
 
         $html = wp_remote_retrieve_body($response);
 
@@ -226,7 +257,10 @@ class ArtImageApiClient
     public function get_products($subcategory_slug_or_url)
     {
         $cookies = $this->get_authenticated_cookies();
-        if (!$cookies) return [];
+        if (!$cookies) {
+            art_image_log_import_error('API', 'Falha na autenticação ao buscar produtos');
+            return [];
+        }
 
         $cookie_header = $this->format_cookies($cookies);
 
@@ -242,10 +276,13 @@ class ArtImageApiClient
         // Pega a primeira página para descobrir o total de páginas
         $response = wp_remote_get($base_url, [
             'headers' => ['Cookie' => $cookie_header],
-            'timeout' => 30,
+            'timeout' => $this->timeout,
         ]);
 
-        if (is_wp_error($response)) return [];
+        if (is_wp_error($response)) {
+            art_image_log_import_error('API', 'Erro ao buscar produtos de ' . $base_url . ': ' . $response->get_error_message());
+            return [];
+        }
 
         $html = wp_remote_retrieve_body($response);
         $total_pages = 1;
@@ -268,10 +305,13 @@ class ArtImageApiClient
 
             $response = wp_remote_get($url, [
                 'headers' => ['Cookie' => $cookie_header],
-                'timeout' => 30,
+                'timeout' => $this->timeout,
             ]);
 
-            if (is_wp_error($response)) continue;
+            if (is_wp_error($response)) {
+                art_image_log_import_error('API', 'Erro ao buscar página ' . $page . ' de produtos: ' . $response->get_error_message());
+                continue;
+            }
 
             $html = wp_remote_retrieve_body($response);
 
@@ -298,6 +338,7 @@ class ArtImageApiClient
     {
         $cookies = $this->get_authenticated_cookies();
         if (!$cookies) {
+            art_image_log_import_error('API', 'Falha na autenticação ao buscar detalhes do produto');
             return [];
         }
 
@@ -306,9 +347,10 @@ class ArtImageApiClient
         // 1. Busca a página do produto
         $response = wp_remote_get($product_url, [
             'headers' => ['Cookie' => $cookie_header],
-            'timeout' => 30,
+            'timeout' => $this->timeout,
         ]);
         if (is_wp_error($response)) {
+            art_image_log_import_error('API', 'Erro ao buscar detalhes do produto ' . $product_url . ': ' . $response->get_error_message());
             return [];
         }
 
@@ -406,6 +448,7 @@ class ArtImageApiClient
     {
         $cookies = $this->get_authenticated_cookies();
         if (!$cookies) {
+            art_image_log_import_error('API', 'Falha na autenticação ao buscar artistas');
             return [];
         }
 
@@ -413,9 +456,10 @@ class ArtImageApiClient
 
         $response = wp_remote_get($artists_page_url, [
             'headers' => ['Cookie' => $cookie_header],
-            'timeout' => 30,
+            'timeout' => $this->timeout,
         ]);
         if (is_wp_error($response)) {
+            art_image_log_import_error('API', 'Erro ao buscar artistas de ' . $artists_page_url . ': ' . $response->get_error_message());
             return [];
         }
 

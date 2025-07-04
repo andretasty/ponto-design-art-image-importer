@@ -28,8 +28,14 @@ require_once ART_IMAGE_PLUGIN_DIR . 'includes/async-handler.php';
 // Carrega funções auxiliares de importação
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/import-helpers.php';
 
-// Carrega sistema de tracking de sincronização
+// Carrega sistema de tracking de sincronização e o inicializa
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-tracker.php';
+add_action('art_image_loaded', 'art_image_init_sync_tracker', 5);
+
+function art_image_init_sync_tracker() {
+    global $artimage_sync_tracker;
+    $artimage_sync_tracker = new ArtImageSyncTracker();
+}
 
 // Carrega os campos personalizados
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/product-fields.php';

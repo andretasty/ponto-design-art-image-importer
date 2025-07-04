@@ -30,6 +30,7 @@ function art_image_render_admin_page() {
     echo '<a href="?page=art-image&tab=manual_import" class="nav-tab ' . ($active_tab === 'manual_import' ? 'nav-tab-active' : '') . '">Importação Manual</a>';
     echo '<a href="?page=art-image&tab=sync_stats" class="nav-tab ' . ($active_tab === 'sync_stats' ? 'nav-tab-active' : '') . '">Estatísticas</a>';
     echo '<a href="?page=art-image&tab=debug" class="nav-tab ' . ($active_tab === 'debug' ? 'nav-tab-active' : '') . '">Debug/Fuso Horário</a>';
+    echo '<a href="?page=art-image&tab=diagnostics" class="nav-tab ' . ($active_tab === 'diagnostics' ? 'nav-tab-active' : '') . '">Diagnóstico</a>';
     echo '</h2>';
 
     if ($active_tab === 'settings') {
@@ -211,6 +212,10 @@ function art_image_render_admin_page() {
         echo '</div>';
         
         echo '</div>';
+    }
+
+    if ($active_tab === 'diagnostics') {
+        require_once ART_IMAGE_PLUGIN_DIR . 'admin/diagnostics.php';
     }
 
     echo '</div>';

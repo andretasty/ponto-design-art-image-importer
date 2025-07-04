@@ -82,6 +82,17 @@ class ArtImageTimezoneHelper {
             ];
         }
         
+        // Verifica próximo passo de sincronização
+        $next_step = wp_next_scheduled('art_image_run_sync_step');
+        if ($next_step) {
+            $events['sync_step'] = [
+                'name' => 'Próximo passo de sincronização',
+                'timestamp' => $next_step,
+                'date' => wp_date('Y-m-d H:i:s', $next_step),
+                'hook' => 'art_image_run_sync_step'
+            ];
+        }
+        
         return $events;
     }
     
@@ -122,28 +133,40 @@ class ArtImageTimezoneHelper {
     }
     
     /**
-     * Reagenda um evento para o horário correto
+     * Reagenda um evento existente
      */
     public static function reschedule_event($hook, $time, $recurrence = 'daily') {
-        // Remove agendamento existente
-        $existing = wp_next_scheduled($hook);
-        if ($existing) {
-            wp_unschedule_event($existing, $hook);
-            self::log_with_timezone("Evento {$hook} cancelado");
+        // Cancela o evento existente
+        $timestamp = wp_next_scheduled($hook);
+        if ($timestamp) {
+            wp_unschedule_event($timestamp, $hook);
         }
         
-        // Calcula novo timestamp
-        $next_execution = self::get_next_execution_time($time);
-        $timestamp = $next_execution->getTimestamp();
-        
-        // Agenda novo evento
-        $result = wp_schedule_event($timestamp, $recurrence, $hook);
+        // Agenda o novo evento
+        $next_exec = self::get_next_execution_time($time);
+        $result = wp_schedule_event($next_exec->getTimestamp(), $recurrence, $hook);
         
         if ($result !== false) {
-            self::log_with_timezone("Evento {$hook} reagendado para " . $next_execution->format('Y-m-d H:i:s T'));
+            self::log_with_timezone("Evento {$hook} reagendado para: " . $next_exec->format('Y-m-d H:i:s T'));
             return true;
         } else {
-            self::log_with_timezone("Erro ao reagendar evento {$hook}");
+            self::log_with_timezone("ERRO: Falha ao reagendar evento {$hook}");
+            return false;
+        }
+    }
+    
+    /**
+     * Agenda um evento considerando o fuso horário
+     */
+    public static function schedule_event($hook, $time, $recurrence = 'daily') {
+        $next_exec = self::get_next_execution_time($time);
+        $result = wp_schedule_event($next_exec->getTimestamp(), $recurrence, $hook);
+        
+        if ($result !== false) {
+            self::log_with_timezone("Evento {$hook} agendado para: " . $next_exec->format('Y-m-d H:i:s T'));
+            return true;
+        } else {
+            self::log_with_timezone("ERRO: Falha ao agendar evento {$hook}");
             return false;
         }
     }
