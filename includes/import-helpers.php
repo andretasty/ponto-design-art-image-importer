@@ -154,6 +154,21 @@ add_filter('art_image_product_import_batch_size', function($batch_size) {
 });
 
 /**
+ * Filtro para configurar timeout de download de imagens
+ */
+add_filter('art_image_download_timeout', function($timeout) {
+    // Timeout padrão de 30 segundos, mas permite configuração
+    return apply_filters('art_image_api_timeout', 30);
+});
+
+/**
+ * Filtro para configurar número máximo de imagens na galeria
+ */
+add_filter('art_image_max_gallery_images', function($max_images) {
+    return 5; // Máximo 5 imagens na galeria por padrão
+});
+
+/**
  * Função para verificar e recuperar estado da importação
  */
 function art_image_get_import_state() {
@@ -225,7 +240,190 @@ add_action('wp_ajax_art_image_clear_import_state', function() {
 /**
  * MODO DE TESTE: Limita o número de subcategorias para a importação de produtos.
  * Remova ou comente esta linha para importar todas as subcategorias.
+ * REMOVIDO PARA PERMITIR IMPORTAÇÃO COMPLETA
  */
-add_filter('art_image_debug_subcategory_limit', function() {
-    return 5; 
+// add_filter('art_image_debug_subcategory_limit', function() {
+//     return 5; 
+// });
+
+/**
+ * Registra log detalhado sobre processamento de produto
+ */
+function art_image_log_product_processing($sku, $action, $details = []) {
+    $log_entry = sprintf(
+        '[PRODUTO] SKU: %s | Ação: %s',
+        $sku,
+        $action
+    );
+    
+    if (!empty($details)) {
+        $formatted_details = [];
+        foreach ($details as $key => $value) {
+            if (is_array($value)) {
+                $formatted_details[] = $key . ': ' . count($value) . ' itens';
+            } else {
+                $formatted_details[] = $key . ': ' . $value;
+            }
+        }
+        $log_entry .= ' | ' . implode(' | ', $formatted_details);
+    }
+    
+    ArtImageTimezoneHelper::log_with_timezone($log_entry);
+}
+
+/**
+ * Verifica se uma URL de imagem é válida
+ */
+function art_image_is_valid_image_url($url) {
+    if (empty($url)) {
+        return false;
+    }
+    
+    // Verifica se é uma URL válida
+    if (!filter_var($url, FILTER_VALIDATE_URL)) {
+        return false;
+    }
+    
+    // Verifica se a extensão é de imagem
+    $valid_extensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+    $extension = strtolower(pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION));
+    
+    return in_array($extension, $valid_extensions);
+}
+
+/**
+ * Conta produtos importados nas últimas 24 horas
+ */
+function art_image_get_recent_import_stats() {
+    global $wpdb;
+    
+    $yesterday = date('Y-m-d H:i:s', strtotime('-24 hours'));
+    
+    $stats = [
+        'products_created' => 0,
+        'products_updated' => 0,
+        'images_downloaded' => 0,
+        'errors' => 0
+    ];
+    
+    // Conta produtos criados/atualizados
+    $products_count = $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$wpdb->posts} p 
+         INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id 
+         WHERE p.post_type = 'product' 
+         AND pm.meta_key = '_artimage_last_sync_date' 
+         AND pm.meta_value >= %s",
+        $yesterday
+    ));
+    
+    $stats['products_total'] = (int) $products_count;
+    
+    // Conta imagens baixadas
+    $images_count = $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$wpdb->postmeta} 
+         WHERE meta_key = '_artimage_original_url' 
+         AND post_id IN (
+             SELECT post_id FROM {$wpdb->posts} 
+             WHERE post_date >= %s AND post_type = 'attachment'
+         )",
+        $yesterday
+    ));
+    
+    $stats['images_downloaded'] = (int) $images_count;
+    
+    return $stats;
+}
+
+/**
+ * Adiciona endpoint AJAX para verificar estatísticas de importação
+ */
+add_action('wp_ajax_art_image_get_import_stats', function() {
+    check_ajax_referer('art_image_nonce');
+    
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Sem permissão');
+    }
+    
+    $stats = art_image_get_recent_import_stats();
+    $errors = art_image_get_import_errors(5); // Últimos 5 erros
+    
+    wp_send_json_success([
+        'stats' => $stats,
+        'recent_errors' => $errors,
+        'timestamp' => current_time('mysql')
+    ]);
+});
+
+/**
+ * Função de teste para verificar processamento de detalhes de produtos
+ */
+function art_image_test_product_details_processing() {
+    if (!current_user_can('manage_options')) {
+        return ['error' => 'Sem permissão'];
+    }
+    
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/api-client.php';
+    $client = new ArtImageApiClient();
+    
+    // Busca algumas subcategorias para teste
+    $terms = get_terms([
+        'taxonomy' => 'product_cat',
+        'hide_empty' => false,
+        'parent' => ['!=', 0],
+        'number' => 3
+    ]);
+    
+    $test_results = [];
+    
+    foreach ($terms as $term) {
+        $parent_term = get_term($term->parent, 'product_cat');
+        $parent_slug = $parent_term && !is_wp_error($parent_term) ? $parent_term->slug : '';
+        $filtro_sub_id = get_term_meta($term->term_id, 'filtro_sub_id', true);
+        
+        if ($parent_slug && $filtro_sub_id) {
+            $products_url = "https://artimage.com.br/produtos/{$parent_slug}?filtro-sub={$filtro_sub_id}";
+            $products = $client->get_products($products_url);
+            
+            if (!empty($products)) {
+                $first_product = $products[0];
+                if (!empty($first_product['link'])) {
+                    $details = $client->get_product_details($first_product['link']);
+                    
+                    $test_results[] = [
+                        'subcategoria' => $term->name,
+                        'produto_titulo' => $first_product['title'] ?? 'N/A',
+                        'produto_sku' => $first_product['code'] ?? 'N/A',
+                        'detalhes_encontrados' => count($details),
+                        'campos_detalhes' => array_keys($details),
+                        'imagens_encontradas' => isset($details['images']) ? count($details['images']) : 0,
+                        'tem_technique' => isset($details['technique']),
+                        'tem_frame' => isset($details['frame']),
+                        'tem_size' => isset($details['size']),
+                        'tem_artist' => isset($details['artist'])
+                    ];
+                    break; // Testa apenas um produto por subcategoria
+                }
+            }
+        }
+    }
+    
+    return $test_results;
+}
+
+/**
+ * Endpoint AJAX para teste de processamento de detalhes
+ */
+add_action('wp_ajax_art_image_test_product_details', function() {
+    check_ajax_referer('art_image_nonce');
+    
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Sem permissão');
+    }
+    
+    $results = art_image_test_product_details_processing();
+    
+    wp_send_json_success([
+        'test_results' => $results,
+        'timestamp' => current_time('mysql')
+    ]);
 }); 

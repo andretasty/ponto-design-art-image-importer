@@ -143,7 +143,9 @@ class ArtImageSyncManager {
                          $this->handle_product_prep_result($result);
                 break;
             case 'products':
+                         art_image_log_product_processing('SYNC-MANAGER', 'CASE_PRODUCTS_START');
                          $result = $this->importer->import_products_batch($page, 5);
+                         art_image_log_product_processing('SYNC-MANAGER', 'CASE_PRODUCTS_END');
                          $this->handle_step_result($result, 'done', 'Produtos');
                 break;
             default:
@@ -176,7 +178,9 @@ class ArtImageSyncManager {
             $this->set_sync_step($current_step, $current_page + 1);
             } else {
             $this->log("Finalizada a importação de {$log_name}. Próximo passo: {$next_step_name}");
-            $this->set_sync_step($next_step_name, 1);
+            // A preparação de produtos deve começar do índice 0, os outros passos da página 1.
+            $next_page = ($next_step_name === 'prepare_products') ? 0 : 1;
+            $this->set_sync_step($next_step_name, $next_page);
         }
     }
 
