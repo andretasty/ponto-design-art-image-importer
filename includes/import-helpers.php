@@ -242,9 +242,9 @@ add_action('wp_ajax_art_image_clear_import_state', function() {
  * Remova ou comente esta linha para importar todas as subcategorias.
  * REMOVIDO PARA PERMITIR IMPORTAÇÃO COMPLETA
  */
-// add_filter('art_image_debug_subcategory_limit', function() {
-//     return 5; 
-// });
+add_filter('art_image_debug_subcategory_limit', function() {
+    return 1; 
+});
 
 /**
  * Registra log detalhado sobre processamento de produto

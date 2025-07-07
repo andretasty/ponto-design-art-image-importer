@@ -99,9 +99,6 @@ class ArtImageSyncManager {
      * Executa o processo de sincronização em um loop contínuo com controle de tempo.
      */
     public function run_sync_step() {
-        $start_time = time();
-        $time_limit = apply_filters('art_image_sync_time_limit', 45); // 45 segundos por padrão
-
         // Verifica se há um lock ativo antes de executar
         if (!$this->is_lock_active()) {
             $this->log("Nenhum lock ativo encontrado ao executar run_sync_step. Abortando.");
@@ -109,60 +106,64 @@ class ArtImageSyncManager {
             return;
         }
 
-        $this->log("=== INICIO DO CICLO DE SINCRONIZAÇÃO (Limite: {$time_limit}s) ===");
+        $this->log("=== EXECUTANDO PASSO DE SINCRONIZAÇÃO ===");
         
-        while ((time() - $start_time) < $time_limit) {
-            $step = get_option(self::SYNC_STEP_OPTION, 'done');
-            $page = (int) get_option(self::SYNC_PAGE_OPTION, 1);
-        
-            if ($step === 'done') {
-                $this->log("Ciclo de sincronização finalizado. Nenhum passo a executar.");
-                $this->complete_sync();
-                return; // Encerra o loop e a função
-            }
-            
-        $this->log("Executando passo: '{$step}', página: {$page}");
-
-            $result = false;
-            try {
-        switch ($step) {
-            case 'categories':
-                        $result = $this->importer->import_categories($page, 1000);
-                        $this->handle_step_result($result, 'subcategories', 'Categorias');
-                break;
-            case 'subcategories':
-                        $result = $this->importer->import_subcategories($page, 1000);
-                        $this->handle_step_result($result, 'artists', 'Subcategorias');
-                break;
-            case 'artists':
-                        $result = $this->importer->import_artists($page, 1000);
-                        $this->handle_step_result($result, 'prepare_products', 'Artistas');
-                break;
-            case 'prepare_products':
-                        $result = $this->importer->prepare_product_import_queue_batch($page);
-                         $this->handle_product_prep_result($result);
-                break;
-            case 'products':
-                         art_image_log_product_processing('SYNC-MANAGER', 'CASE_PRODUCTS_START');
-                         $result = $this->importer->import_products_batch($page, 5);
-                         art_image_log_product_processing('SYNC-MANAGER', 'CASE_PRODUCTS_END');
-                         $this->handle_step_result($result, 'done', 'Produtos');
-                break;
-            default:
-                        $this->log("Passo desconhecido '{$step}'. Finalizando.");
-                        $this->set_sync_step('done');
-                        break;
-                }
-            } catch (Exception $e) {
-                $this->log("ERRO CRÍTICO durante o passo '{$step}': " . $e->getMessage());
-                $this->complete_sync(true); // Finaliza com erro
-                return; // Encerra o loop
-            }
+        $step = get_option(self::SYNC_STEP_OPTION, 'done');
+        $page = (int) get_option(self::SYNC_PAGE_OPTION, 1);
+    
+        if ($step === 'done') {
+            $this->log("Sincronização já concluída. Finalizando.");
+            $this->complete_sync();
+            return;
         }
         
-        $this->log("=== FIM DO CICLO DE SINCRONIZAÇÃO (Limite de tempo atingido) ===");
-        $this->log("O processo continuará na próxima execução do cron.");
-        $this->schedule_next_step(5); // Agenda para continuar na próxima janela
+        $this->log("Executando passo: '{$step}', página: {$page}");
+
+        try {
+            switch ($step) {
+                case 'categories':
+                    $result = $this->importer->import_categories($page, 1000);
+                    $this->handle_step_result($result, 'subcategories', 'Categorias');
+                    break;
+                case 'subcategories':
+                    $result = $this->importer->import_subcategories($page, 1000);
+                    $this->handle_step_result($result, 'artists', 'Subcategorias');
+                    break;
+                case 'artists':
+                    $result = $this->importer->import_artists($page, 1000);
+                    $this->handle_step_result($result, 'prepare_products', 'Artistas');
+                    break;
+                case 'prepare_products':
+                    $result = $this->importer->prepare_product_import_queue_batch($page);
+                    $this->handle_product_prep_result($result);
+                    break;
+                case 'products':
+                    art_image_log_product_processing('SYNC-MANAGER', 'CASE_PRODUCTS_START');
+                    $batch_size = apply_filters('art_image_product_import_batch_size', 5);
+                    $result = $this->importer->import_products_batch($page, $batch_size);
+                    art_image_log_product_processing('SYNC-MANAGER', 'CASE_PRODUCTS_END', ['has_more' => $result['has_more'] ?? 'unknown']);
+                    $this->handle_step_result($result, 'done', 'Produtos');
+                    break;
+                default:
+                    $this->log("Passo desconhecido '{$step}'. Finalizando.");
+                    $this->set_sync_step('done');
+                    break;
+            }
+        } catch (Exception $e) {
+            $this->log("ERRO CRÍTICO durante o passo '{$step}': " . $e->getMessage());
+            $this->complete_sync(true); // Finaliza com erro
+            return; // Encerra a execução
+        }
+
+        // Após executar o passo, verifica se a sincronização deve continuar ou parar
+        $current_step_after_run = get_option(self::SYNC_STEP_OPTION, 'done');
+        if ($current_step_after_run === 'done') {
+            $this->log("Processo de sincronização concluído. Finalizando.");
+            $this->complete_sync();
+        } else {
+            $this->log("Passo concluído. Agendando a continuação em 5 segundos.");
+            $this->schedule_next_step(5);
+        }
     }
     
     /**

@@ -655,10 +655,14 @@ class ArtImageImporter
                 art_image_log_product_processing($sku, 'DETALHES_API_OBTIDOS', ['campos' => $details_count, 'link' => $p_data['link'] ?? 'N/A']);
                 
                 $product_id = wc_get_product_id_by_sku($sku);
+                art_image_log_product_processing($sku, 'VERIFICANDO_EXISTENCIA', ['product_id' => $product_id ?: 'Nenhum']);
+
                 $product = $product_id ? wc_get_product($product_id) : new WC_Product_Simple();
+                art_image_log_product_processing($sku, 'OBJETO_PRODUTO', ['tipo' => $product_id ? 'Existente' : 'Novo', 'classe' => is_object($product) ? get_class($product) : 'N/A']);
                 
                 if (!$product) {
                     $logs[] = "ERRO: Não foi possível criar/obter produto para SKU: {$sku}";
+                    art_image_log_product_processing($sku, 'ERRO_CRIAR_OBJETO_PRODUTO');
                     unset($product_queue[$queue_key_index]);
                     continue;
                 }
@@ -670,10 +674,13 @@ class ArtImageImporter
                 $product->set_description(wp_kses_post($details['description'] ?? ''));
                 $product->set_status('publish');
 
+                art_image_log_product_processing($sku, 'SALVANDO_PRODUTO', ['nome' => $product->get_name(), 'preco' => $product->get_regular_price()]);
                 $new_prod_id = $product->save();
+                art_image_log_product_processing($sku, 'PRODUTO_SALVO', ['new_product_id' => $new_prod_id]);
 
                 if ($new_prod_id) {
                     $logs[] = ($product_id ? "Produto atualizado" : "Produto criado") . ": {$product->get_name()} (ID: {$new_prod_id})";
+                    art_image_log_product_processing($sku, 'DEFININDO_TERMOS');
                     
                     // Definir categorias
                     wp_set_object_terms($new_prod_id, [(int)$item_to_process['subcategory_id'], (int)$item_to_process['subcategory_parent_id']], 'product_cat', true);
@@ -685,6 +692,7 @@ class ArtImageImporter
                     }
                     
                     // Salvar campos personalizados
+                    art_image_log_product_processing($sku, 'SALVANDO_CAMPOS_PERSONALIZADOS');
                     $custom_fields_saved = 0;
                     if (!empty($details['technique'])) {
                         update_post_meta($new_prod_id, '_technique', sanitize_text_field($details['technique']));
@@ -703,9 +711,11 @@ class ArtImageImporter
                     }
                     
                     // Processar imagens
+                    art_image_log_product_processing($sku, 'INICIANDO_PROCESSAMENTO_IMAGEM');
                     $images_processed = 0;
                     if (!empty($details['images']) && is_array($details['images'])) {
                         $logs[] = "Processando " . count($details['images']) . " imagens";
+                        art_image_log_product_processing($sku, 'PROCESSANDO_IMAGENS', ['total' => count($details['images'])]);
                         
                         // Definir imagem principal (primeira imagem)
                         if ((!$product_id || !has_post_thumbnail($new_prod_id)) && !empty($details['images'][0])) {
@@ -718,9 +728,11 @@ class ArtImageImporter
                                     $logs[] = "Imagem principal definida (ID: {$thumb_id})";
                                 } else {
                                     $logs[] = "ERRO: Falha ao baixar imagem principal";
+                                    art_image_log_product_processing($sku, 'ERRO_DOWNLOAD_IMAGEM_PRINCIPAL', ['url' => $main_image_url]);
                                 }
                             } else {
                                 $logs[] = "AVISO: URL da imagem principal inválida: " . $main_image_url;
+                                art_image_log_product_processing($sku, 'URL_IMAGEM_INVALIDA', ['url' => $main_image_url]);
                             }
                         }
                         
@@ -739,9 +751,11 @@ class ArtImageImporter
                                         $logs[] = "Imagem da galeria adicionada (ID: {$attach_id})";
                                     } else {
                                         $logs[] = "ERRO: Falha ao baixar imagem da galeria";
+                                        art_image_log_product_processing($sku, 'ERRO_DOWNLOAD_IMAGEM_GALERIA', ['url' => $img_url]);
                                     }
                                 } else {
                                     $logs[] = "AVISO: URL da imagem da galeria inválida: " . $img_url;
+                                    art_image_log_product_processing($sku, 'URL_IMAGEM_GALERIA_INVALIDA', ['url' => $img_url]);
                                 }
                             }
                             
@@ -754,8 +768,10 @@ class ArtImageImporter
                         }
                         
                         $logs[] = "Total de imagens processadas: {$images_processed}";
+                        art_image_log_product_processing($sku, 'FIM_PROCESSAMENTO_IMAGEM', ['processadas' => $images_processed]);
                     } else {
                         $logs[] = "Nenhuma imagem disponível para este produto";
+                        art_image_log_product_processing($sku, 'NENHUMA_IMAGEM_DISPONIVEL');
                     }
                     
                     // Marcar produto como importado no tracker
