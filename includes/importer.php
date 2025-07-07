@@ -1104,7 +1104,7 @@ class ArtImageImporter
                 ]);
                 return 0;
             }
-            
+
             // Prepara array para upload
             $file_array = [];
             $file_array['name'] = basename(parse_url($image_url, PHP_URL_PATH));
@@ -1114,6 +1114,11 @@ class ArtImageImporter
             if (empty($file_array['name']) || $file_array['name'] === '/') {
                 $file_array['name'] = 'product_image_' . time() . '.jpg';
             }
+
+            // Garante que as funções necessárias do WordPress estão carregadas
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            require_once ABSPATH . 'wp-admin/includes/media.php';
+            require_once ABSPATH . 'wp-admin/includes/image.php';
 
             // Usa a função do WP para inserir como attachment
             $attach_id = media_handle_sideload($file_array, $post_id);
