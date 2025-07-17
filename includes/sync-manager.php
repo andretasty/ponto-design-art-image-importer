@@ -13,7 +13,7 @@ class ArtImageSyncManager {
     const SYNC_STEP_OPTION = 'artimage_current_sync_step';
     const SYNC_PAGE_OPTION = 'artimage_current_sync_page';
     const LOCK_OPTION = 'artimage_sync_lock';
-    const LOCK_TIMEOUT = 3600; // 1 hora de timeout
+    const LOCK_TIMEOUT = 43200; // 12 horas de timeout
 
     public function __construct() {
         $this->importer = new ArtImageImporter();
@@ -105,6 +105,10 @@ class ArtImageSyncManager {
             $this->clear_pending_events();
             return;
         }
+
+        // Atualiza o lock para estender o tempo de execução
+        update_option(self::LOCK_OPTION, time());
+        $this->log("Lock de sincronização atualizado para evitar expiração.");
 
         $this->log("=== EXECUTANDO PASSO DE SINCRONIZAÇÃO ===");
         

@@ -16,8 +16,8 @@ if (!defined('ABSPATH')) {
  */
 function art_image_configure_import_optimizations() {
     // Aumenta limites se possível
-    @ini_set('max_execution_time', 300);
-    @ini_set('memory_limit', '256M');
+    @ini_set('max_execution_time', 86400);
+    @ini_set('memory_limit', '512M');
     
     // Desabilita cache de objetos durante importação
     wp_suspend_cache_invalidation(true);
@@ -242,9 +242,9 @@ add_action('wp_ajax_art_image_clear_import_state', function() {
  * Remova ou comente esta linha para importar todas as subcategorias.
  * REMOVIDO PARA PERMITIR IMPORTAÇÃO COMPLETA
  */
-add_filter('art_image_debug_subcategory_limit', function() {
-    return 1; 
-});
+// add_filter('art_image_debug_subcategory_limit', function() {
+//     return 1; 
+// });
 
 /**
  * Registra log detalhado sobre processamento de produto
@@ -289,6 +289,47 @@ function art_image_is_valid_image_url($url) {
     $extension = strtolower(pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION));
     
     return in_array($extension, $valid_extensions);
+}
+
+/**
+ * Extrai dimensões de uma string como "50x70cm"
+ *
+ * @param string $size_str A string de tamanho.
+ * @return array Um array com 'width', 'height', 'length'.
+ */
+function art_image_parse_dimensions($size_str) {
+    $dimensions = [
+        'width'  => null,
+        'height' => null,
+        'length' => null,
+    ];
+
+    if (empty($size_str)) {
+        return $dimensions;
+    }
+
+    // Usa regex para extrair todos os "números" que podem conter dígitos e vírgulas/pontos.
+    preg_match_all('/[0-9,.]+/', $size_str, $matches);
+
+    if (!empty($matches[0])) {
+        // Limpa e converte os números encontrados para float, tratando vírgula como decimal.
+        $numeric_parts = array_map(function($num_str) {
+            return floatval(str_replace(',', '.', $num_str));
+        }, $matches[0]);
+        
+        // A convenção para obras de arte é geralmente Altura x Largura x Profundidade
+        if (isset($numeric_parts[0])) {
+            $dimensions['height'] = $numeric_parts[0];
+        }
+        if (isset($numeric_parts[1])) {
+            $dimensions['width'] = $numeric_parts[1];
+        }
+        if (isset($numeric_parts[2])) {
+            $dimensions['length'] = $numeric_parts[2]; // Profundidade (length no WC)
+        }
+    }
+
+    return $dimensions;
 }
 
 /**
@@ -427,3 +468,65 @@ add_action('wp_ajax_art_image_test_product_details', function() {
         'timestamp' => current_time('mysql')
     ]);
 }); 
+
+
+// Adiciona parcelamento na listagem de produtos (shop/categoria)
+add_action( 'woocommerce_after_shop_loop_item_title', 'pd_parcelamento_resumido', 20 );
+
+// Shortcode para usar na página do produto: [parcelamento_produto]
+add_shortcode( 'parcelamento_produto', 'pd_parcelamento_shortcode' );
+
+function pd_parcelamento_resumido() {
+	global $product;
+	if ( ! $product || $product->get_price() <= 0 ) {
+		return;
+	}
+	$price = wc_get_price_to_display( $product );
+	
+	// 3x sem juros
+	$valor_3x = $price / 3;
+	
+	// até 12x com juros (2,99% fixa, mais 1,7% por mês)
+	$juros_fixo   = 0.0299;
+	$juros_mensal = 0.017;
+	$parcelas_max = 12;
+	$total_com_juros = $price * ( 1 + $juros_fixo ) * ( 1 + $juros_mensal * $parcelas_max );
+	$valor_12x       = $total_com_juros / $parcelas_max;
+	
+	echo '<div class="pd-parcelamento-resumido">';
+	echo '<div class="linha-parcelamento primeira">Até 3x de ' . wc_price( $valor_3x ) . ' s/ juros</div>';
+	echo '<div class="linha-parcelamento segunda">Ou até ' . $parcelas_max . 'x de ' . wc_price( $valor_12x ) . '</div>';
+	echo '</div>';
+}
+
+function pd_parcelamento_shortcode( $atts ) {
+	global $product;
+	
+	// Se não estiver na página de produto, tenta pegar o produto atual
+	if ( ! $product && is_product() ) {
+		$product = wc_get_product( get_the_ID() );
+	}
+	
+	if ( ! $product || $product->get_price() <= 0 ) {
+		return '';
+	}
+	
+	$price = wc_get_price_to_display( $product );
+	
+	// 3x sem juros
+	$valor_3x = $price / 3;
+	
+	// até 12x com juros (2,99% fixa, mais 1,7% por mês)
+	$juros_fixo   = 0.0299;
+	$juros_mensal = 0.017;
+	$parcelas_max = 12;
+	$total_com_juros = $price * ( 1 + $juros_fixo ) * ( 1 + $juros_mensal * $parcelas_max );
+	$valor_12x       = $total_com_juros / $parcelas_max;
+	
+	$output = '<div class="pd-parcelamento-resumido shortcode-parcelamento">';
+	$output .= '<div class="linha-parcelamento primeira">Até 3x de <strong>' . wc_price( $valor_3x ) . '</strong> s/ juros</div>';
+	$output .= '<div class="linha-parcelamento segunda">Ou até ' . $parcelas_max . 'x de <strong>' . wc_price( $valor_12x ) . '</strong></div>';
+	$output .= '</div>';
+	
+	return $output;
+}

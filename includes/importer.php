@@ -674,6 +674,29 @@ class ArtImageImporter
                 $product->set_description(wp_kses_post($details['description'] ?? ''));
                 $product->set_status('publish');
 
+                // Define as categorias ANTES de salvar para evitar "Sem Categoria"
+                $category_ids = array_filter([
+                    (int)$item_to_process['subcategory_id'],
+                    (int)$item_to_process['subcategory_parent_id']
+                ]);
+                if (!empty($category_ids)) {
+                    $product->set_category_ids($category_ids);
+                }
+                
+                // Define as dimensões para o frete
+                if (!empty($details['size'])) {
+                    $parsed_dims = art_image_parse_dimensions($details['size']);
+                    if ($parsed_dims['width']) {
+                        $product->set_width($parsed_dims['width']);
+                    }
+                    if ($parsed_dims['height']) {
+                        $product->set_height($parsed_dims['height']);
+                    }
+                    if ($parsed_dims['length']) {
+                        $product->set_length($parsed_dims['length']);
+                    }
+                }
+
                 art_image_log_product_processing($sku, 'SALVANDO_PRODUTO', ['nome' => $product->get_name(), 'preco' => $product->get_regular_price()]);
                 $new_prod_id = $product->save();
                 art_image_log_product_processing($sku, 'PRODUTO_SALVO', ['new_product_id' => $new_prod_id]);
@@ -681,9 +704,6 @@ class ArtImageImporter
                 if ($new_prod_id) {
                     $logs[] = ($product_id ? "Produto atualizado" : "Produto criado") . ": {$product->get_name()} (ID: {$new_prod_id})";
                     art_image_log_product_processing($sku, 'DEFININDO_TERMOS');
-                    
-                    // Definir categorias
-                    wp_set_object_terms($new_prod_id, [(int)$item_to_process['subcategory_id'], (int)$item_to_process['subcategory_parent_id']], 'product_cat', true);
                     
                     // Definir artista se disponível
                     if (!empty($details['artist']) && ($term = get_term_by('name', $details['artist'], 'artist'))) {
@@ -1110,16 +1130,21 @@ class ArtImageImporter
         }
 
         try {
+            ArtImageTimezoneHelper::log_with_timezone("[DEBUG] Iniciando download da imagem para Post ID {$post_id} a partir de: {$image_url}");
             // Baixa a imagem para o diretório de uploads
             $timeout = apply_filters('art_image_download_timeout', 30);
             $tmp = download_url($image_url, $timeout);
+
             if (is_wp_error($tmp)) {
                 art_image_log_import_error('IMAGE_DOWNLOAD', 'Erro ao baixar imagem: ' . $tmp->get_error_message(), [
                     'url' => $image_url,
                     'post_id' => $post_id
                 ]);
+                ArtImageTimezoneHelper::log_with_timezone("[DEBUG] Falha em download_url para Post ID {$post_id}. Erro: " . $tmp->get_error_message());
                 return 0;
             }
+
+            ArtImageTimezoneHelper::log_with_timezone("[DEBUG] Download da imagem concluído para Post ID {$post_id}. Arquivo temporário em: {$tmp}");
 
             // Prepara array para upload
             $file_array = [];
@@ -1136,6 +1161,8 @@ class ArtImageImporter
             require_once ABSPATH . 'wp-admin/includes/media.php';
             require_once ABSPATH . 'wp-admin/includes/image.php';
 
+            ArtImageTimezoneHelper::log_with_timezone("[DEBUG] Dependências de mídia carregadas. Executando media_handle_sideload para Post ID {$post_id}.");
+
             // Usa a função do WP para inserir como attachment
             $attach_id = media_handle_sideload($file_array, $post_id);
             
@@ -1146,6 +1173,7 @@ class ArtImageImporter
                     'post_id' => $post_id,
                     'filename' => $file_array['name']
                 ]);
+                ArtImageTimezoneHelper::log_with_timezone("[DEBUG] Falha em media_handle_sideload para Post ID {$post_id}. Erro: " . $attach_id->get_error_message());
                 return 0;
             }
             
