@@ -471,7 +471,23 @@ class ArtImageASManager {
      */
     public static function is_sync_running(): bool {
         $session_id = get_option('artimage_as_session_id');
-        return !empty($session_id);
+        if (empty($session_id)) {
+            return false;
+        }
+        // Safeguard: sessão presa por mais de 6h é considerada morta e liberada
+        // automaticamente. Sem isto, uma ação que morre no meio (ex.: timeout de
+        // 300s do Action Scheduler) deixa a session_id presa SEM expiração e
+        // bloqueia TODOS os syncs seguintes indefinidamente ("Já existe uma
+        // sincronização em andamento. Abortando").
+        $started_at = get_option('artimage_as_started_at');
+        if ($started_at && (current_time('timestamp') - strtotime($started_at)) > 6 * HOUR_IN_SECONDS) {
+            ArtImageTimezoneHelper::log_with_timezone("[AS] Sessao presa detectada ({$session_id}, inicio {$started_at}) - liberando lock automaticamente.");
+            delete_option('artimage_as_session_id');
+            delete_option('artimage_as_current_phase');
+            delete_option('artimage_as_started_at');
+            return false;
+        }
+        return true;
     }
 
     /**
