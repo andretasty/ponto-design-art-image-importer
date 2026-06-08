@@ -31,7 +31,7 @@ class ArtImageASManager {
      * Quantidade de produtos por batch (otimização de performance)
      * Em vez de 1 action por produto, 1 action processa BATCH_SIZE produtos
      */
-    const PRODUCT_BATCH_SIZE = 20;
+    const PRODUCT_BATCH_SIZE = 5;
 
     /**
      * Tempo entre cada batch de produtos (segundos)
