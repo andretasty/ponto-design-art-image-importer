@@ -61,9 +61,7 @@ do_action('art_image_loaded');
 // === Hardening de importação (causa #3: ações da fase de produtos estouravam
 // o timeout de 300s do Action Scheduler e eram marcadas como falha) ===
 // Dá mais folga ao Action Scheduler antes de considerar uma ação morta (padrão 300s).
-add_filter('action_scheduler_timeout_period', function() { return 600; });
-add_filter('action_scheduler_failure_period', function() { return 600; });
 // Reduz o trabalho por ação para a fase de produtos terminar bem abaixo do limite.
 add_filter('art_image_product_import_batch_size', function() { return 5; });
-add_filter('art_image_download_timeout', function() { return 12; });
+add_filter('art_image_download_timeout', function() { return 20; });
 add_filter('art_image_api_timeout', function() { return 20; });
