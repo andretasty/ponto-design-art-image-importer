@@ -22,42 +22,12 @@ class ArtImageImporter
 
     /**
      * Limpa transients e locks para um tipo de importação.
+     * Usa a função centralizada art_image_cleanup_entity_transients().
+     *
+     * @param string $type Tipo de importação: 'categories', 'subcategories', 'products', 'artists'
      */
     private function cleanup_import(string $type): void {
-        $master_lock_key = 'artimage_master_import_lock';
-        switch ($type) {
-            case 'categories':
-                delete_transient('artimage_category_import_queue');
-                delete_transient('artimage_category_import_total');
-                delete_transient('artimage_category_processed_count');
-                delete_transient('artimage_category_batch_lock');
-                delete_transient('artimage_cancel_category_import_flag');
-                break;
-            case 'subcategories':
-                delete_transient('artimage_subcategory_import_queue');
-                delete_transient('artimage_subcategory_import_total');
-                delete_transient('artimage_subcategory_processed_count');
-                delete_transient('artimage_subcategory_batch_lock');
-                delete_transient('artimage_cancel_subcategory_import_flag');
-                break;
-            case 'products':
-                delete_transient('artimage_product_import_queue');
-                delete_transient('artimage_product_processed_count');
-                delete_transient('artimage_product_import_total');
-                delete_transient('artimage_product_batch_lock');
-                delete_transient('artimage_cancel_product_import_flag');
-                break;
-            case 'artists':
-                delete_transient('artimage_artist_import_queue');
-                delete_transient('artimage_artist_import_total');
-                delete_transient('artimage_artist_processed_count');
-                delete_transient('artimage_artist_batch_lock');
-                delete_transient('artimage_cancel_artist_import_flag');
-                break;
-        }
-        if (get_transient($master_lock_key) === $type) {
-            delete_transient($master_lock_key);
-        }
+        art_image_cleanup_entity_transients($type);
     }
 
     /**
@@ -100,6 +70,13 @@ class ArtImageImporter
                     'total_to_import' => 0,
                     'has_more' => false,
                 ];
+            }
+
+            // Aplica limite de categorias para teste
+            $category_limit = apply_filters('art_image_debug_category_limit', 0);
+            if ($category_limit > 0 && count($all_cats_data) > $category_limit) {
+                $logs[] = "MODO DE TESTE: A importação foi limitada a {$category_limit} categoria(s).";
+                $all_cats_data = array_slice($all_cats_data, 0, $category_limit);
             }
 
             set_transient($queue_key, $all_cats_data, 1 * HOUR_IN_SECONDS);
@@ -549,18 +526,39 @@ class ArtImageImporter
             $product_queue = get_transient($queue_key) ?: [];
 
             if (!empty($products_from_api)) {
+                // Aplica limite de produtos para teste
+                $product_limit = apply_filters('art_image_debug_product_limit', 0);
+                $products_added = 0;
+
                 foreach ($products_from_api as $p_data) {
+                    // Verifica se já atingiu o limite total de produtos
+                    if ($product_limit > 0 && count($product_queue) >= $product_limit) {
+                        $logs[] = "MODO DE TESTE: Limite de {$product_limit} produtos atingido.";
+                        break;
+                    }
+
                     $product_queue[] = [
                         'product_data' => $p_data,
                         'subcategory_id' => $sub->term_id,
                         'subcategory_parent_id' => $sub->parent,
                     ];
+                    $products_added++;
                 }
-                $logs[] = "Coletados " . count($products_from_api) . " produtos de {$sub->name}.";
+                $logs[] = "Coletados {$products_added} produtos de {$sub->name}.";
             } else {
                 $logs[] = "Nenhum produto encontrado em {$sub->name}.";
             }
             set_transient($queue_key, $product_queue, 12 * HOUR_IN_SECONDS);
+
+            // Se atingiu o limite de produtos, finaliza a preparação
+            $product_limit = apply_filters('art_image_debug_product_limit', 0);
+            if ($product_limit > 0 && count($product_queue) >= $product_limit) {
+                $total_queued = count($product_queue);
+                set_transient('artimage_product_import_total', $total_queued, 12 * HOUR_IN_SECONDS);
+                $logs[] = "Preparação da fila de produtos concluída (modo teste). Total de produtos: {$total_queued}.";
+                delete_transient($subs_list_key);
+                return ['status' => 'completed', 'logs' => $logs, 'product_queue_count' => $total_queued, 'has_more' => false];
+            }
         } else {
             $logs[] = "AVISO: Pulando subcategoria '{$sub->name}' por falta de dados (Pai: {$parent_slug}, Filtro ID: {$filtro_sub_id}).";
         }
@@ -869,6 +867,13 @@ class ArtImageImporter
                 ];
             }
 
+            // Aplica limite de artistas para teste
+            $artist_limit = apply_filters('art_image_debug_artist_limit', 0);
+            if ($artist_limit > 0 && count($all_artists_data) > $artist_limit) {
+                $logs[] = "MODO DE TESTE: A importação foi limitada a {$artist_limit} artista(s).";
+                $all_artists_data = array_slice($all_artists_data, 0, $artist_limit);
+            }
+
             set_transient($queue_key, $all_artists_data, 1 * HOUR_IN_SECONDS);
             set_transient($total_key, count($all_artists_data), 1 * HOUR_IN_SECONDS);
             set_transient($processed_key, 0, 1 * HOUR_IN_SECONDS);
@@ -980,8 +985,23 @@ class ArtImageImporter
                 if (is_wp_error($updated_term)) {
                     $logs[] = "Erro ao atualizar artista (termo) {$a['title']} (ID {$term_id}): " . $updated_term->get_error_message();
                 } else {
-                    update_term_meta($term_id, '_external_slug', $a['slug']); 
-                    update_term_meta($term_id, '_image_url', $a['image']);
+                    update_term_meta($term_id, '_external_slug', $a['slug']);
+
+                    // Processar e salvar a imagem do artista na galeria do WordPress
+                    if (!empty($a['image'])) {
+                        // A função artimage_download_and_attach_image já evita duplicatas pela URL.
+                        // O segundo parâmetro (post_id) é 0 porque não estamos anexando a um post.
+                        $attachment_id = $this->artimage_download_and_attach_image($a['image'], 0);
+                        
+                        if ($attachment_id) {
+                            // Salva o ID do anexo como 'thumbnail_id', um padrão comum que o Elementor pode reconhecer.
+                            update_term_meta($term_id, 'thumbnail_id', $attachment_id);
+                            $logs[] = "Imagem para o artista {$a['title']} foi baixada e definida (ID de anexo: {$attachment_id}).";
+                        } else {
+                            $logs[] = "AVISO: Falha ao baixar a imagem do artista {$a['title']} da URL: {$a['image']}.";
+                        }
+                    }
+
                     // Marca artista como importado
                     if (isset($GLOBALS['artimage_sync_tracker']) && $artimage_sync_tracker) {
                         $artimage_sync_tracker->mark_artist_imported($term_id, $a['slug']);
@@ -1002,8 +1022,23 @@ class ArtImageImporter
                     $logs[] = "Erro ao criar artista (termo) {$a['title']}: " . $term_data->get_error_message();
                 } else {
                     $term_id = $term_data['term_id'];
-                    update_term_meta($term_id, '_external_slug', $a['slug']); 
-                    update_term_meta($term_id, '_image_url', $a['image']);
+                    update_term_meta($term_id, '_external_slug', $a['slug']);
+
+                    // Processar e salvar a imagem do artista na galeria do WordPress
+                    if (!empty($a['image'])) {
+                        // A função artimage_download_and_attach_image já evita duplicatas pela URL.
+                        // O segundo parâmetro (post_id) é 0 porque não estamos anexando a um post.
+                        $attachment_id = $this->artimage_download_and_attach_image($a['image'], 0);
+                        
+                        if ($attachment_id) {
+                            // Salva o ID do anexo como 'thumbnail_id', um padrão comum que o Elementor pode reconhecer.
+                            update_term_meta($term_id, 'thumbnail_id', $attachment_id);
+                            $logs[] = "Imagem para o artista {$a['title']} foi baixada e definida (ID de anexo: {$attachment_id}).";
+                        } else {
+                            $logs[] = "AVISO: Falha ao baixar a imagem do artista {$a['title']} da URL: {$a['image']}.";
+                        }
+                    }
+
                     // Marca artista como importado
                     if (isset($GLOBALS['artimage_sync_tracker']) && $artimage_sync_tracker) {
                         $artimage_sync_tracker->mark_artist_imported($term_id, $a['slug']);
@@ -1182,7 +1217,7 @@ class ArtImageImporter
             
             ArtImageTimezoneHelper::log_with_timezone("Imagem baixada e anexada com sucesso (ID: {$attach_id}): {$image_url}");
             return $attach_id;
-            
+
         } catch (Exception $e) {
             art_image_log_import_error('IMAGE_DOWNLOAD', 'Exceção ao processar imagem: ' . $e->getMessage(), [
                 'url' => $image_url,
@@ -1190,6 +1225,414 @@ class ArtImageImporter
             ]);
             return 0;
         }
+    }
+
+    // =========================================================================
+    // MÉTODOS PARA ACTION SCHEDULER - Processamento individual de entidades
+    // =========================================================================
+
+    /**
+     * Importa uma única categoria (para Action Scheduler)
+     *
+     * @param array $cat_data Dados da categoria ['nome' => string, 'slug' => string, 'url' => string]
+     * @return array Resultado da importação
+     */
+    public function import_single_category(array $cat_data): array {
+        global $artimage_sync_tracker;
+
+        try {
+            $nome = sanitize_text_field($cat_data['nome'] ?? '');
+            $slug = sanitize_title($cat_data['slug'] ?? $nome);
+
+            if (empty($nome)) {
+                return ['success' => false, 'error' => 'Nome da categoria vazio'];
+            }
+
+            $term = term_exists($slug, 'product_cat');
+
+            if (!$term) {
+                $result = wp_insert_term($nome, 'product_cat', [
+                    'slug' => $slug,
+                ]);
+
+                if (is_wp_error($result)) {
+                    return ['success' => false, 'error' => $result->get_error_message()];
+                }
+
+                $term_id = $result['term_id'];
+                ArtImageTimezoneHelper::log_with_timezone("[AS] Categoria criada: {$nome} (ID: {$term_id})");
+            } else {
+                $term_id = is_array($term) ? $term['term_id'] : $term;
+                ArtImageTimezoneHelper::log_with_timezone("[AS] Categoria existente: {$nome} (ID: {$term_id})");
+            }
+
+            // Marcar no tracker
+            if ($artimage_sync_tracker) {
+                $artimage_sync_tracker->mark_category_imported($term_id, $slug);
+            }
+
+            return ['success' => true, 'term_id' => $term_id, 'name' => $nome];
+
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Importa uma única subcategoria (para Action Scheduler)
+     *
+     * @param array $sub_data Dados da subcategoria
+     * @return array Resultado da importação
+     */
+    public function import_single_subcategory(array $sub_data): array {
+        global $artimage_sync_tracker;
+
+        try {
+            $nome = sanitize_text_field($sub_data['nome'] ?? '');
+            $parent_id = (int)($sub_data['parent_id'] ?? 0);
+            $filtro_sub_id = sanitize_text_field($sub_data['filtro_sub_id'] ?? '');
+
+            if (empty($nome) || empty($parent_id)) {
+                return ['success' => false, 'error' => 'Dados incompletos da subcategoria'];
+            }
+
+            // Slug único para evitar conflitos
+            $unique_slug = sanitize_title($nome) . '-' . $parent_id;
+
+            $term = term_exists($unique_slug, 'product_cat');
+
+            if (!$term) {
+                $result = wp_insert_term($nome, 'product_cat', [
+                    'slug' => $unique_slug,
+                    'parent' => $parent_id,
+                ]);
+
+                if (is_wp_error($result)) {
+                    return ['success' => false, 'error' => $result->get_error_message()];
+                }
+
+                $term_id = $result['term_id'];
+                ArtImageTimezoneHelper::log_with_timezone("[AS] Subcategoria criada: {$nome} (ID: {$term_id})");
+            } else {
+                $term_id = is_array($term) ? $term['term_id'] : $term;
+                ArtImageTimezoneHelper::log_with_timezone("[AS] Subcategoria existente: {$nome} (ID: {$term_id})");
+            }
+
+            // Salvar filtro_sub_id para uso posterior
+            if (!empty($filtro_sub_id)) {
+                update_term_meta($term_id, 'filtro_sub_id', $filtro_sub_id);
+            }
+
+            // Marcar no tracker
+            if ($artimage_sync_tracker) {
+                $artimage_sync_tracker->mark_category_imported($term_id, $unique_slug);
+            }
+
+            return ['success' => true, 'term_id' => $term_id, 'name' => $nome];
+
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Importa um único artista (para Action Scheduler)
+     *
+     * @param array $artist_data Dados do artista
+     * @return array Resultado da importação
+     */
+    public function import_single_artist(array $artist_data): array {
+        global $artimage_sync_tracker;
+
+        try {
+            $nome = sanitize_text_field($artist_data['nome'] ?? $artist_data['name'] ?? '');
+            $slug = sanitize_title($artist_data['slug'] ?? $nome);
+            $image_url = $artist_data['image'] ?? $artist_data['image_url'] ?? '';
+            $bio = wp_kses_post($artist_data['bio'] ?? $artist_data['description'] ?? '');
+
+            if (empty($nome)) {
+                return ['success' => false, 'error' => 'Nome do artista vazio'];
+            }
+
+            $term = term_exists($slug, 'artist');
+
+            if (!$term) {
+                $result = wp_insert_term($nome, 'artist', [
+                    'slug' => $slug,
+                    'description' => $bio,
+                ]);
+
+                if (is_wp_error($result)) {
+                    return ['success' => false, 'error' => $result->get_error_message()];
+                }
+
+                $term_id = $result['term_id'];
+                ArtImageTimezoneHelper::log_with_timezone("[AS] Artista criado: {$nome} (ID: {$term_id})");
+            } else {
+                $term_id = is_array($term) ? $term['term_id'] : $term;
+
+                // Atualizar descrição se fornecida
+                if (!empty($bio)) {
+                    wp_update_term($term_id, 'artist', ['description' => $bio]);
+                }
+                ArtImageTimezoneHelper::log_with_timezone("[AS] Artista existente: {$nome} (ID: {$term_id})");
+            }
+
+            // Processar imagem do artista
+            if (!empty($image_url) && art_image_is_valid_image_url($image_url)) {
+                $existing_thumb = get_term_meta($term_id, 'thumbnail_id', true);
+                if (!$existing_thumb) {
+                    $thumb_id = $this->artimage_download_and_attach_image($image_url, 0);
+                    if ($thumb_id) {
+                        update_term_meta($term_id, 'thumbnail_id', $thumb_id);
+                    }
+                }
+            }
+
+            // Marcar no tracker
+            if ($artimage_sync_tracker) {
+                $artimage_sync_tracker->mark_artist_imported($term_id, $slug);
+            }
+
+            return ['success' => true, 'term_id' => $term_id, 'name' => $nome];
+
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Importa um único produto (para Action Scheduler)
+     *
+     * @param array $data Dados do produto
+     * @return array Resultado da importação
+     */
+    public function import_single_product(array $data): array {
+        global $artimage_sync_tracker;
+
+        try {
+            $p_data = $data['product_data'] ?? $data;
+            $subcategory_id = (int)($data['subcategory_id'] ?? 0);
+            $subcategory_parent_id = (int)($data['subcategory_parent_id'] ?? 0);
+
+            if (empty($p_data['code'])) {
+                return ['success' => false, 'error' => 'SKU vazio'];
+            }
+
+            $sku = sanitize_text_field($p_data['code']);
+
+            // Buscar detalhes completos da API
+            $details = [];
+            if (!empty($p_data['link'])) {
+                $details = $this->client->get_product_details($p_data['link']);
+            }
+
+            // Verificar se produto já existe
+            $product_id = wc_get_product_id_by_sku($sku);
+            $product = $product_id ? wc_get_product($product_id) : new WC_Product_Simple();
+
+            if (!$product) {
+                return ['success' => false, 'error' => 'Falha ao criar objeto produto'];
+            }
+
+            // Configurar dados básicos
+            $product->set_sku($sku);
+            $product->set_name(sanitize_text_field($details['title'] ?? $p_data['title'] ?? 'Produto sem título'));
+
+            // Processar preço
+            $price_raw = $details['price'] ?? $p_data['price'] ?? '0';
+            $price = floatval(str_replace(['R$', '.', ','], ['', '', '.'], $price_raw));
+            $product->set_regular_price($price);
+
+            $product->set_description(wp_kses_post($details['description'] ?? ''));
+            $product->set_status('publish');
+
+            // Definir categorias
+            $category_ids = array_filter([$subcategory_id, $subcategory_parent_id]);
+            if (!empty($category_ids)) {
+                $product->set_category_ids($category_ids);
+            }
+
+            // Definir dimensões
+            if (!empty($details['size'])) {
+                $parsed_dims = art_image_parse_dimensions($details['size']);
+                if (!empty($parsed_dims['width'])) $product->set_width($parsed_dims['width']);
+                if (!empty($parsed_dims['height'])) $product->set_height($parsed_dims['height']);
+                if (!empty($parsed_dims['length'])) $product->set_length($parsed_dims['length']);
+            }
+
+            // Salvar produto
+            $new_prod_id = $product->save();
+
+            if (!$new_prod_id) {
+                return ['success' => false, 'error' => 'Falha ao salvar produto'];
+            }
+
+            $action = $product_id ? 'atualizado' : 'criado';
+
+            // Definir artista
+            if (!empty($details['artist'])) {
+                $artist_term = get_term_by('name', $details['artist'], 'artist');
+                if ($artist_term) {
+                    wp_set_object_terms($new_prod_id, $artist_term->term_id, 'artist');
+                }
+            }
+
+            // Salvar campos personalizados
+            if (!empty($details['technique'])) {
+                update_post_meta($new_prod_id, '_technique', sanitize_text_field($details['technique']));
+            }
+            if (!empty($details['frame'])) {
+                update_post_meta($new_prod_id, '_frame', sanitize_text_field($details['frame']));
+            }
+            if (!empty($details['size'])) {
+                update_post_meta($new_prod_id, '_size', sanitize_text_field($details['size']));
+            }
+
+            // Processar imagens
+            $images_processed = 0;
+            if (!empty($details['images']) && is_array($details['images'])) {
+                // Imagem principal
+                if ((!$product_id || !has_post_thumbnail($new_prod_id)) && !empty($details['images'][0])) {
+                    $main_image_url = $details['images'][0];
+                    if (art_image_is_valid_image_url($main_image_url)) {
+                        $thumb_id = $this->artimage_download_and_attach_image($main_image_url, $new_prod_id);
+                        if ($thumb_id) {
+                            set_post_thumbnail($new_prod_id, $thumb_id);
+                            $images_processed++;
+                        }
+                    }
+                }
+
+                // Galeria (demais imagens)
+                if (count($details['images']) > 1) {
+                    $max_gallery = apply_filters('art_image_max_gallery_images', 5);
+                    $gallery_images = array_slice($details['images'], 1, $max_gallery);
+                    $gallery_ids = [];
+
+                    foreach ($gallery_images as $img_url) {
+                        if (art_image_is_valid_image_url($img_url)) {
+                            $attach_id = $this->artimage_download_and_attach_image($img_url, $new_prod_id);
+                            if ($attach_id) {
+                                $gallery_ids[] = $attach_id;
+                                $images_processed++;
+                            }
+                        }
+                    }
+
+                    if (!empty($gallery_ids)) {
+                        $product->set_gallery_image_ids($gallery_ids);
+                        $product->save();
+                    }
+                }
+            }
+
+            // Marcar no tracker
+            if ($artimage_sync_tracker) {
+                $artimage_sync_tracker->mark_product_imported($new_prod_id, $sku);
+            }
+
+            return [
+                'success' => true,
+                'product_id' => $new_prod_id,
+                'sku' => $sku,
+                'action' => $action,
+                'images_processed' => $images_processed
+            ];
+
+        } catch (Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage(), 'sku' => $sku ?? 'unknown'];
+        }
+    }
+
+    /**
+     * Importa múltiplos produtos em batch (para Action Scheduler otimizado)
+     * Processa vários produtos em uma única action para maior eficiência
+     *
+     * @param array $products_batch Array de produtos para importar
+     * @return array Resultado da importação do batch
+     */
+    public function import_products_batch_as(array $products_batch): array {
+        $results = [
+            'success' => true,
+            'total' => count($products_batch),
+            'imported' => 0,
+            'updated' => 0,
+            'failed' => 0,
+            'errors' => []
+        ];
+
+        foreach ($products_batch as $product_data) {
+            $result = $this->import_single_product($product_data);
+
+            if ($result['success']) {
+                if (($result['action'] ?? '') === 'atualizado') {
+                    $results['updated']++;
+                } else {
+                    $results['imported']++;
+                }
+            } else {
+                $results['failed']++;
+                $results['errors'][] = [
+                    'sku' => $result['sku'] ?? 'unknown',
+                    'error' => $result['error'] ?? 'Erro desconhecido'
+                ];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Coleta produtos de uma subcategoria específica (para Action Scheduler)
+     * Retorna array de produtos para serem agendados individualmente
+     *
+     * @param int $subcategory_id ID da subcategoria
+     * @return array Lista de produtos coletados
+     */
+    public function collect_products_from_subcategory(int $subcategory_id): array {
+        $sub = get_term($subcategory_id, 'product_cat');
+
+        if (!$sub || is_wp_error($sub)) {
+            return ['success' => false, 'error' => 'Subcategoria não encontrada', 'products' => []];
+        }
+
+        $parent = get_term($sub->parent, 'product_cat');
+        $filtro_sub_id = get_term_meta($subcategory_id, 'filtro_sub_id', true);
+
+        if (!$parent || !$filtro_sub_id) {
+            return [
+                'success' => false,
+                'error' => 'Dados incompletos da subcategoria',
+                'products' => [],
+                'subcategory_name' => $sub->name
+            ];
+        }
+
+        // Montar URL e buscar produtos
+        $url = "https://artimage.com.br/produtos/{$parent->slug}?filtro-sub={$filtro_sub_id}";
+        $products = $this->client->get_products($url);
+
+        // Adicionar contexto a cada produto
+        $products_with_context = [];
+        foreach ($products as $product) {
+            $products_with_context[] = [
+                'product_data' => $product,
+                'subcategory_id' => $subcategory_id,
+                'subcategory_parent_id' => $sub->parent,
+            ];
+        }
+
+        ArtImageTimezoneHelper::log_with_timezone(
+            "[AS] Coletados " . count($products_with_context) . " produtos de {$sub->name}"
+        );
+
+        return [
+            'success' => true,
+            'products' => $products_with_context,
+            'count' => count($products_with_context),
+            'subcategory_name' => $sub->name
+        ];
     }
 }
 

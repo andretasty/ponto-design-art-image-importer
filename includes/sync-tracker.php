@@ -105,20 +105,24 @@ class ArtImageSyncTracker {
     
     /**
      * Remove produtos que não foram importados na última sessão
+     * IMPORTANTE: Só remove produtos que foram importados por este plugin
+     * (identificados pela meta _artimage_source_sku)
      */
     private function cleanup_products($dry_run = false) {
         global $wpdb;
-        
-        // Busca produtos que não foram marcados na sessão atual
+
+        // Busca produtos que:
+        // 1. Foram importados por este plugin (têm _artimage_source_sku)
+        // 2. Não foram marcados na sessão atual
         $products_to_delete = $wpdb->get_results($wpdb->prepare("
-            SELECT p.ID, p.post_title, pm_sku.meta_value as sku
+            SELECT p.ID, p.post_title, pm_source_sku.meta_value as sku
             FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->postmeta} pm_source_sku ON (p.ID = pm_source_sku.post_id AND pm_source_sku.meta_key = '_artimage_source_sku')
             LEFT JOIN {$wpdb->postmeta} pm_sync ON (p.ID = pm_sync.post_id AND pm_sync.meta_key = '_artimage_last_sync')
-            LEFT JOIN {$wpdb->postmeta} pm_sku ON (p.ID = pm_sku.post_id AND pm_sku.meta_key = '_sku')
             WHERE p.post_type = 'product'
             AND p.post_status IN ('publish', 'private', 'draft')
             AND (pm_sync.meta_value IS NULL OR pm_sync.meta_value != %s)
-            AND pm_sku.meta_value IS NOT NULL
+            AND pm_source_sku.meta_value IS NOT NULL
         ", $this->current_sync_id));
         
         $deleted_count = 0;

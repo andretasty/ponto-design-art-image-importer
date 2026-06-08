@@ -651,19 +651,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     appendLog('Sistema de importação Art Image pronto.');
     appendLog('Selecione uma opção acima para começar.');
-    
+
     // Verifica se há importação em andamento e reconecta automaticamente
     checkAndReconnectImport();
-    
+
     if (activeImportsSectionElement && activeImportsListElement && typeof art_image_ajax !== 'undefined') {
-        fetchActiveImports(); 
-        activeImportPollInterval = setInterval(fetchActiveImports, 7000); 
-    } else {
-        if (!activeImportsSectionElement || !activeImportsListElement) {
-            console.warn("Elementos para 'Processos de Importação em Andamento' não encontrados no DOM.");
-        }
-        if(typeof art_image_ajax === 'undefined'){
-            console.warn("Objeto art_image_ajax (nonce) não está disponível. A lista de processos ativos não funcionará.");
-        }
+        fetchActiveImports();
+        activeImportPollInterval = setInterval(fetchActiveImports, 7000);
     }
 });

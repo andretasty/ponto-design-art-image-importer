@@ -4,15 +4,22 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Funções relacionadas ao WP-Cron para importações automáticas
+ * Funções de WP-Cron para importações automáticas
+ *
+ * NOTA: Este arquivo é um FALLBACK para quando o Action Scheduler não está disponível.
+ * O sistema primário de agendamento é o Action Scheduler (includes/action-scheduler-manager.php).
+ * As funções aqui são usadas apenas como backup ou para compatibilidade com instalações
+ * que não possuem WooCommerce/Action Scheduler instalado.
+ *
+ * @see ArtImageASManager para o sistema primário de agendamento
  */
 
-// Adiciona um intervalo de 5 minutos para testes
-add_filter('cron_schedules', 'art_image_add_every_five_minutes');
-function art_image_add_every_five_minutes($schedules) {
-    $schedules['every_five_minutes'] = array(
-        'interval' => 300,
-        'display'  => __('Every 5 Minutes')
+// Adiciona intervalo semanal ao WP-Cron
+add_filter('cron_schedules', 'art_image_add_weekly_schedule');
+function art_image_add_weekly_schedule($schedules) {
+    $schedules['weekly'] = array(
+        'interval' => 604800, // 7 dias em segundos
+        'display'  => __('Weekly')
     );
     return $schedules;
 }
@@ -76,20 +83,23 @@ function art_image_run_daily_import() {
 }
 
 /**
- * Função chamada na ativação do plugin para agendar o evento
+ * Função de agendamento flexível para sincronização
  */
-function art_image_schedule_daily_event() {
+function art_image_schedule_sync_event() {
     $schedule_time = get_option('art_image_schedule_time', '02:00');
-    if (!wp_next_scheduled('art_image_daily_event')) {
-        ArtImageTimezoneHelper::schedule_event('art_image_daily_event', $schedule_time, 'daily');
+    $schedule_frequency = get_option('art_image_schedule_frequency', 'weekly');
+    $schedule_day = get_option('art_image_schedule_day', 'sunday'); // Para semanal
+    
+    if (!wp_next_scheduled('art_image_sync_event')) {
+        if ($schedule_frequency === 'weekly') {
+            $timestamp = ArtImageTimezoneHelper::get_next_weekly_execution_time($schedule_time, $schedule_day)->getTimestamp();
+        } else {
+            $timestamp = ArtImageTimezoneHelper::get_next_execution_time($schedule_time)->getTimestamp();
+        }
+        
+        wp_schedule_event($timestamp, $schedule_frequency, 'art_image_sync_event');
     }
 }
-register_activation_hook(ART_IMAGE_PLUGIN_FILE, 'art_image_schedule_daily_event');
 
-/**
- * Função chamada na desativação do plugin para limpar o agendamento
- */
-function art_image_unschedule_daily_event() {
-    wp_clear_scheduled_hook('art_image_daily_event');
-}
-register_deactivation_hook(ART_IMAGE_PLUGIN_FILE, 'art_image_unschedule_daily_event');
+// IMPORTANTE: Hooks de ativação conflitantes foram removidos para evitar problemas
+// A migração será gerenciada pelo sync-manager.php

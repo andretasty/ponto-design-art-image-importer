@@ -315,17 +315,31 @@ class ArtImageApiClient
 
             $html = wp_remote_retrieve_body($response);
 
-            if (preg_match_all('#<a href="([^"]+/produtos/detalhe/[^"]+)">.*?<span class="item-title">(.*?)</span>.*?<span class="item-price">(.*?)</span>.*?<span class="item-size">(.*?)</span>.*?<span class="item-code">(.*?)</span>#is', $html, $matches, PREG_SET_ORDER)) {
+            // Regex atualizado para a nova estrutura HTML (novembro 2025)
+            // Captura: link, título, preço, tamanho e código (SKU)
+            $pattern = '#<a\s+href="([^"]+/produtos/detalhe/[^"]+)"[^>]*>.*?'
+                     . '<span\s+class="item-title">([^<]+)</span>.*?'
+                     . '<span\s+class="item-price">([^<]+)</span>.*?'
+                     . '<span\s+class="item-size">([^<]+)</span>.*?'
+                     . '<span\s+class="item-code[^"]*">([^<]+)</span>.*?'
+                     . '</a>#is';
+
+            if (preg_match_all($pattern, $html, $matches, PREG_SET_ORDER)) {
                 foreach ($matches as $match) {
                     $products[] = [
-                        'link'        => html_entity_decode($match[1]),
-                        'title'       => trim(strip_tags($match[2])),
-                        'price'       => trim(strip_tags($match[3])),
-                        'size'        => trim(strip_tags($match[4])),
-                        'code'        => trim(strip_tags($match[5])),
+                        'link'        => html_entity_decode(trim($match[1])),
+                        'title'       => trim($match[2]),
+                        'price'       => trim($match[3]),
+                        'size'        => trim($match[4]),
+                        'code'        => trim($match[5]),
                         'artist_name' => '', // Será preenchido durante a importação se necessário
                     ];
                 }
+            } else {
+                // Se nenhum produto foi encontrado, registra para debug
+                $html_length = strlen($html);
+                $has_links = strpos($html, '/produtos/detalhe/') !== false;
+                art_image_log_import_error('API', "Nenhum produto encontrado na página {$page}. HTML: {$html_length} bytes, Links presentes: " . ($has_links ? 'sim' : 'não'));
             }
         }
 

@@ -15,6 +15,16 @@ add_action('admin_init', function () {
     register_setting('art_image_settings_group', 'art_image_enable_discount');
     register_setting('art_image_settings_group', 'art_image_discount_percent');
     register_setting('art_image_settings_group', 'art_image_category_discounts');
+    
+    // Novas configurações para sincronização semanal
+    register_setting('art_image_settings_group', 'art_image_schedule_frequency', [
+        'sanitize_callback' => 'art_image_sanitize_frequency',
+        'default' => 'weekly'
+    ]);
+    register_setting('art_image_settings_group', 'art_image_schedule_day', [
+        'sanitize_callback' => 'art_image_sanitize_day',
+        'default' => 'sunday'
+    ]);
 
     add_settings_section(
         'art_image_main_section',
@@ -27,8 +37,9 @@ add_action('admin_init', function () {
         'art_image_email',
         __('E-mail de login', 'art-image'),
         function () {
-            $value = esc_attr(get_option('art_image_email', ''));
-            echo "<input type='email' name='art_image_email' value='$value' class='regular-text' />";
+            $value = esc_attr(defined('ART_IMAGE_EMAIL') ? ART_IMAGE_EMAIL : get_option('art_image_email', ''));
+            echo "<input type='email' value='$value' class='regular-text' readonly disabled />";
+            echo "<p class='description' style='color: #666;'>Valor fixo definido no código</p>";
         },
         'art_image_settings',
         'art_image_main_section'
@@ -38,8 +49,43 @@ add_action('admin_init', function () {
         'art_image_password',
         __('Senha', 'art-image'),
         function () {
-            $value = esc_attr(get_option('art_image_password', ''));
-            echo "<input type='password' name='art_image_password' value='$value' class='regular-text' />";
+            echo "<input type='password' value='********' class='regular-text' readonly disabled />";
+            echo "<p class='description' style='color: #666;'>Valor fixo definido no código</p>";
+        },
+        'art_image_settings',
+        'art_image_main_section'
+    );
+
+    add_settings_field(
+        'art_image_schedule_frequency',
+        __('Frequência de Sincronização', 'art-image'),
+        function () {
+            $value = defined('ART_IMAGE_SCHEDULE_FREQUENCY') ? ART_IMAGE_SCHEDULE_FREQUENCY : get_option('art_image_schedule_frequency', 'weekly');
+            $label = $value === 'weekly' ? 'Semanal' : 'Diária';
+            echo "<input type='text' value='{$label}' class='regular-text' readonly disabled />";
+            echo "<p class='description' style='color: #666;'>Valor fixo definido no código</p>";
+        },
+        'art_image_settings',
+        'art_image_main_section'
+    );
+
+    add_settings_field(
+        'art_image_schedule_day',
+        __('Dia da Semana', 'art-image'),
+        function () {
+            $value = defined('ART_IMAGE_SCHEDULE_DAY') ? ART_IMAGE_SCHEDULE_DAY : get_option('art_image_schedule_day', 'sunday');
+            $days = [
+                'sunday' => 'Domingo',
+                'monday' => 'Segunda-feira',
+                'tuesday' => 'Terça-feira',
+                'wednesday' => 'Quarta-feira',
+                'thursday' => 'Quinta-feira',
+                'friday' => 'Sexta-feira',
+                'saturday' => 'Sábado'
+            ];
+            $label = $days[$value] ?? $value;
+            echo "<input type='text' value='{$label}' class='regular-text' readonly disabled />";
+            echo "<p class='description' style='color: #666;'>Valor fixo definido no código</p>";
         },
         'art_image_settings',
         'art_image_main_section'
@@ -47,11 +93,11 @@ add_action('admin_init', function () {
 
     add_settings_field(
         'art_image_schedule_time',
-        __('Horário diário para importar (HH:MM)', 'art-image'),
+        __('Horário de Sincronização', 'art-image'),
         function () {
-            $value = esc_attr(get_option('art_image_schedule_time', '02:00'));
-            echo "<input type='time' name='art_image_schedule_time' value='$value' class='regular-text' />";
-            echo "<p class='description'>" . __('Horário será executado no fuso horário configurado no WordPress.', 'art-image') . "</p>";
+            $value = esc_attr(defined('ART_IMAGE_SCHEDULE_TIME') ? ART_IMAGE_SCHEDULE_TIME : get_option('art_image_schedule_time', '02:00'));
+            echo "<input type='text' value='$value' class='regular-text' readonly disabled />";
+            echo "<p class='description' style='color: #666;'>Valor fixo definido no código (fuso horário do WordPress)</p>";
         },
         'art_image_settings',
         'art_image_main_section'
@@ -89,9 +135,10 @@ add_action('admin_init', function () {
         'art_image_enable_discount',
         __('Ativar descontos?', 'art-image'),
         function () {
-            $checked = checked(get_option('art_image_enable_discount', '0'), '1', false);
-            echo "<input type='checkbox' name='art_image_enable_discount' value='1' $checked /> ";
-            echo "<span>Ativar descontos gerais ou por categoria</span>";
+            $enabled = defined('ART_IMAGE_ENABLE_DISCOUNT') ? ART_IMAGE_ENABLE_DISCOUNT : (get_option('art_image_enable_discount', '0') === '1');
+            $status = $enabled ? 'Ativado' : 'Desativado';
+            echo "<input type='text' value='{$status}' class='regular-text' readonly disabled />";
+            echo "<p class='description' style='color: #666;'>Valor fixo definido no código</p>";
         },
         'art_image_discounts',
         'art_image_discounts_section',
@@ -137,3 +184,16 @@ add_action('admin_init', function () {
         ['label_for' => 'artimage_enable_cleanup']
     );
 });
+
+/**
+ * Funções de sanitização para as novas configurações
+ */
+function art_image_sanitize_frequency($value) {
+    $allowed = ['daily', 'weekly'];
+    return in_array($value, $allowed) ? $value : 'weekly';
+}
+
+function art_image_sanitize_day($value) {
+    $allowed = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    return in_array($value, $allowed) ? $value : 'sunday';
+}

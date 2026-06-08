@@ -8,6 +8,204 @@ if (!defined('ABSPATH')) {
 }
 
 /**
+ * Gerenciador centralizado de locks para importação
+ *
+ * Esta classe unifica o controle de locks que antes estava espalhado em múltiplos
+ * transients (artimage_master_import_lock, artimage_*_batch_lock, etc.)
+ */
+class ArtImageLockManager {
+
+    /**
+     * Nome da option que armazena o lock
+     */
+    const LOCK_OPTION = 'artimage_import_lock';
+
+    /**
+     * Timeout padrão do lock em segundos (15 minutos)
+     */
+    const DEFAULT_TIMEOUT = 900;
+
+    /**
+     * Tipos válidos de importação
+     */
+    const VALID_TYPES = ['categories', 'subcategories', 'products', 'artists', 'sync'];
+
+    /**
+     * Adquire um lock para um tipo de importação
+     *
+     * @param string $type Tipo de importação
+     * @param int $timeout Timeout em segundos (padrão: 15 minutos)
+     * @return bool True se conseguiu adquirir o lock
+     */
+    public static function acquire($type, $timeout = self::DEFAULT_TIMEOUT) {
+        if (!in_array($type, self::VALID_TYPES, true)) {
+            return false;
+        }
+
+        $current_lock = self::get_current();
+
+        // Se já existe um lock ativo de outro tipo, não permite
+        if ($current_lock !== null && $current_lock['type'] !== $type) {
+            // Verifica se o lock expirou
+            if (time() < $current_lock['expires']) {
+                return false;
+            }
+            // Lock expirou, pode sobrescrever
+        }
+
+        $lock_data = [
+            'type' => $type,
+            'started' => time(),
+            'expires' => time() + $timeout,
+        ];
+
+        update_option(self::LOCK_OPTION, $lock_data, false);
+
+        // Também mantém o transient legado para compatibilidade
+        set_transient('artimage_master_import_lock', $type, $timeout);
+
+        return true;
+    }
+
+    /**
+     * Libera o lock de um tipo específico
+     *
+     * @param string $type Tipo de importação (opcional, libera qualquer se não especificado)
+     * @return bool True se liberou o lock
+     */
+    public static function release($type = null) {
+        $current_lock = self::get_current();
+
+        if ($current_lock === null) {
+            return true; // Não havia lock
+        }
+
+        // Se especificou tipo, só libera se for o mesmo
+        if ($type !== null && $current_lock['type'] !== $type) {
+            return false;
+        }
+
+        delete_option(self::LOCK_OPTION);
+        delete_transient('artimage_master_import_lock');
+
+        return true;
+    }
+
+    /**
+     * Obtém informações do lock atual
+     *
+     * @return array|null Dados do lock ou null se não houver
+     */
+    public static function get_current() {
+        $lock_data = get_option(self::LOCK_OPTION);
+
+        if (empty($lock_data) || !is_array($lock_data)) {
+            return null;
+        }
+
+        // Verifica se expirou
+        if (isset($lock_data['expires']) && time() > $lock_data['expires']) {
+            self::release();
+            return null;
+        }
+
+        return $lock_data;
+    }
+
+    /**
+     * Verifica se existe um lock ativo
+     *
+     * @param string|null $type Tipo específico para verificar (opcional)
+     * @return bool
+     */
+    public static function is_locked($type = null) {
+        $current_lock = self::get_current();
+
+        if ($current_lock === null) {
+            return false;
+        }
+
+        if ($type !== null) {
+            return $current_lock['type'] === $type;
+        }
+
+        return true;
+    }
+
+    /**
+     * Obtém o tipo do lock atual
+     *
+     * @return string|null
+     */
+    public static function get_type() {
+        $current_lock = self::get_current();
+        return $current_lock ? $current_lock['type'] : null;
+    }
+
+    /**
+     * Limpa todos os locks (força)
+     *
+     * @return void
+     */
+    public static function clear_all() {
+        delete_option(self::LOCK_OPTION);
+        delete_transient('artimage_master_import_lock');
+
+        // Também limpa locks de batch legados
+        $batch_locks = [
+            'artimage_product_batch_lock',
+            'artimage_category_batch_lock',
+            'artimage_subcategory_batch_lock',
+            'artimage_artist_batch_lock',
+        ];
+
+        foreach ($batch_locks as $lock) {
+            delete_transient($lock);
+        }
+
+        if (class_exists('ArtImageLogger')) {
+            ArtImageLogger::info('Todos os locks foram limpos via LockManager');
+        }
+    }
+
+    /**
+     * Renova o timeout do lock atual
+     *
+     * @param int $timeout Novo timeout em segundos
+     * @return bool
+     */
+    public static function renew($timeout = self::DEFAULT_TIMEOUT) {
+        $current_lock = self::get_current();
+
+        if ($current_lock === null) {
+            return false;
+        }
+
+        $current_lock['expires'] = time() + $timeout;
+        update_option(self::LOCK_OPTION, $current_lock, false);
+        set_transient('artimage_master_import_lock', $current_lock['type'], $timeout);
+
+        return true;
+    }
+
+    /**
+     * Obtém tempo restante do lock em segundos
+     *
+     * @return int Segundos restantes ou 0 se não houver lock
+     */
+    public static function get_remaining_time() {
+        $current_lock = self::get_current();
+
+        if ($current_lock === null) {
+            return 0;
+        }
+
+        $remaining = $current_lock['expires'] - time();
+        return max(0, $remaining);
+    }
+}
+
+/**
  * Funções auxiliares para importação
  */
 
@@ -183,20 +381,140 @@ function art_image_get_import_state() {
 
 /**
  * Função para limpar todos os transients de importação
+ *
+ * @deprecated Use art_image_clear_transients() instead
  */
 function art_image_clear_import_state() {
-    $transients = [
-        'artimage_product_import_queue',
-        'artimage_product_import_total',
-        'artimage_product_processed_count',
-        'artimage_master_import_lock',
-        'artimage_product_batch_lock',
-        'artimage_cancel_product_import_flag',
-        'artimage_product_subs_list'
+    art_image_clear_transients('all');
+}
+
+/**
+ * Limpa transients de importação de forma centralizada
+ *
+ * @param string|array $types Tipo(s) de transients a limpar: 'all', 'locks', 'queues', 'counters', 'flags'
+ *                            ou array de tipos específicos: ['categories', 'products', 'artists', 'subcategories']
+ * @return int Número de transients deletados
+ */
+function art_image_clear_transients($types = 'all') {
+    $all_transients = [
+        'locks' => [
+            'artimage_master_import_lock',
+            'artimage_product_batch_lock',
+            'artimage_category_batch_lock',
+            'artimage_subcategory_batch_lock',
+            'artimage_artist_batch_lock',
+        ],
+        'queues' => [
+            'artimage_product_import_queue',
+            'artimage_category_import_queue',
+            'artimage_subcategory_import_queue',
+            'artimage_artist_import_queue',
+            'artimage_product_subs_list',
+        ],
+        'counters' => [
+            'artimage_product_import_total',
+            'artimage_product_processed_count',
+            'artimage_category_import_total',
+            'artimage_category_processed_count',
+            'artimage_subcategory_import_total',
+            'artimage_subcategory_processed_count',
+            'artimage_artist_import_total',
+            'artimage_artist_processed_count',
+        ],
+        'flags' => [
+            'artimage_cancel_product_import_flag',
+            'artimage_cancel_category_import_flag',
+            'artimage_cancel_subcategory_import_flag',
+            'artimage_cancel_artist_import_flag',
+        ],
     ];
-    
-    foreach ($transients as $transient) {
-        delete_transient($transient);
+
+    // Transients por tipo de entidade
+    $entity_transients = [
+        'categories' => [
+            'artimage_category_import_queue',
+            'artimage_category_import_total',
+            'artimage_category_processed_count',
+            'artimage_category_batch_lock',
+            'artimage_cancel_category_import_flag',
+        ],
+        'subcategories' => [
+            'artimage_subcategory_import_queue',
+            'artimage_subcategory_import_total',
+            'artimage_subcategory_processed_count',
+            'artimage_subcategory_batch_lock',
+            'artimage_cancel_subcategory_import_flag',
+        ],
+        'products' => [
+            'artimage_product_import_queue',
+            'artimage_product_import_total',
+            'artimage_product_processed_count',
+            'artimage_product_batch_lock',
+            'artimage_cancel_product_import_flag',
+            'artimage_product_subs_list',
+        ],
+        'artists' => [
+            'artimage_artist_import_queue',
+            'artimage_artist_import_total',
+            'artimage_artist_processed_count',
+            'artimage_artist_batch_lock',
+            'artimage_cancel_artist_import_flag',
+        ],
+    ];
+
+    $to_delete = [];
+
+    // Se for 'all', deleta todos
+    if ($types === 'all') {
+        foreach ($all_transients as $group) {
+            $to_delete = array_merge($to_delete, $group);
+        }
+    }
+    // Se for um grupo específico (locks, queues, counters, flags)
+    elseif (is_string($types) && isset($all_transients[$types])) {
+        $to_delete = $all_transients[$types];
+    }
+    // Se for um array de tipos de entidade
+    elseif (is_array($types)) {
+        foreach ($types as $type) {
+            if (isset($entity_transients[$type])) {
+                $to_delete = array_merge($to_delete, $entity_transients[$type]);
+            } elseif (isset($all_transients[$type])) {
+                $to_delete = array_merge($to_delete, $all_transients[$type]);
+            }
+        }
+    }
+    // Se for um tipo de entidade específico como string
+    elseif (is_string($types) && isset($entity_transients[$types])) {
+        $to_delete = $entity_transients[$types];
+    }
+
+    // Remove duplicatas
+    $to_delete = array_unique($to_delete);
+
+    // Deleta os transients
+    $deleted = 0;
+    foreach ($to_delete as $transient) {
+        if (delete_transient($transient)) {
+            $deleted++;
+        }
+    }
+
+    return $deleted;
+}
+
+/**
+ * Limpa transients de uma entidade específica e libera o master lock se necessário
+ *
+ * @param string $type Tipo de entidade: 'categories', 'subcategories', 'products', 'artists'
+ */
+function art_image_cleanup_entity_transients($type) {
+    art_image_clear_transients([$type]);
+
+    // Libera o master lock se estiver travado neste tipo
+    $master_lock = get_transient('artimage_master_import_lock');
+    if ($master_lock === $type) {
+        delete_transient('artimage_master_import_lock');
     }
 }
 
@@ -238,13 +556,13 @@ add_action('wp_ajax_art_image_clear_import_state', function() {
 });
 
 /**
- * MODO DE TESTE: Limita o número de subcategorias para a importação de produtos.
- * Remova ou comente esta linha para importar todas as subcategorias.
- * REMOVIDO PARA PERMITIR IMPORTAÇÃO COMPLETA
+ * MODO DE TESTE: Limites para importação de teste.
+ * Descomente estas linhas para limitar a importação durante testes.
  */
-// add_filter('art_image_debug_subcategory_limit', function() {
-//     return 1; 
-// });
+// add_filter('art_image_debug_category_limit', function() { return 3; });
+// add_filter('art_image_debug_subcategory_limit', function() { return 3; });
+// add_filter('art_image_debug_artist_limit', function() { return 3; });
+// add_filter('art_image_debug_product_limit', function() { return 5; });
 
 /**
  * Registra log detalhado sobre processamento de produto
@@ -476,57 +794,63 @@ add_action( 'woocommerce_after_shop_loop_item_title', 'pd_parcelamento_resumido'
 // Shortcode para usar na página do produto: [parcelamento_produto]
 add_shortcode( 'parcelamento_produto', 'pd_parcelamento_shortcode' );
 
+/**
+ * Exibe resumo de parcelamento sem juros (12x) e valor no PIX com 4% de desconto
+ * na listagem (shop/categoria).
+ */
 function pd_parcelamento_resumido() {
-	global $product;
-	if ( ! $product || $product->get_price() <= 0 ) {
-		return;
-	}
-	$price = wc_get_price_to_display( $product );
-	
-	// 3x sem juros
-	$valor_3x = $price / 3;
-	
-	// até 12x com juros (2,99% fixa, mais 1,7% por mês)
-	$juros_fixo   = 0.0299;
-	$juros_mensal = 0.017;
-	$parcelas_max = 12;
-	$total_com_juros = $price * ( 1 + $juros_fixo ) * ( 1 + $juros_mensal * $parcelas_max );
-	$valor_12x       = $total_com_juros / $parcelas_max;
-	
-	echo '<div class="pd-parcelamento-resumido">';
-	echo '<div class="linha-parcelamento primeira">Até 3x de ' . wc_price( $valor_3x ) . ' s/ juros</div>';
-	echo '<div class="linha-parcelamento segunda">Ou até ' . $parcelas_max . 'x de ' . wc_price( $valor_12x ) . '</div>';
-	echo '</div>';
+    global $product;
+
+    if ( ! $product || $product->get_price() <= 0 ) {
+        return;
+    }
+
+    // Preço já no formato que a loja exibe (com/sem impostos conforme config)
+    $price = wc_get_price_to_display( $product );
+
+    // Configurações
+    $max_installments = 12;
+    $discount_pix_percent = 4; // 4% de desconto
+
+    // Cálculos (sem juros)
+    $valor_12x  = $price / $max_installments;
+    $valor_pix  = $price * ( 1 - ( $discount_pix_percent / 100 ) );
+
+    echo '<div class="pd-parcelamento-resumido">';
+        echo '<div class="linha-parcelamento">Até ' . $max_installments . 'x de ' . wc_price( $valor_12x ) . ' s/ juros</div>';
+        echo '<div class="linha-pix">Ou ' . wc_price( $valor_pix ) . ' no PIX/Boleto</div>';
+    echo '</div>';
 }
 
+/**
+ * Shortcode [parcelamento_produto] para exibir as mesmas informações na página de produto.
+ */
 function pd_parcelamento_shortcode( $atts ) {
-	global $product;
-	
-	// Se não estiver na página de produto, tenta pegar o produto atual
-	if ( ! $product && is_product() ) {
-		$product = wc_get_product( get_the_ID() );
-	}
-	
-	if ( ! $product || $product->get_price() <= 0 ) {
-		return '';
-	}
-	
-	$price = wc_get_price_to_display( $product );
-	
-	// 3x sem juros
-	$valor_3x = $price / 3;
-	
-	// até 12x com juros (2,99% fixa, mais 1,7% por mês)
-	$juros_fixo   = 0.0299;
-	$juros_mensal = 0.017;
-	$parcelas_max = 12;
-	$total_com_juros = $price * ( 1 + $juros_fixo ) * ( 1 + $juros_mensal * $parcelas_max );
-	$valor_12x       = $total_com_juros / $parcelas_max;
-	
-	$output = '<div class="pd-parcelamento-resumido shortcode-parcelamento">';
-	$output .= '<div class="linha-parcelamento primeira">Até 3x de <strong>' . wc_price( $valor_3x ) . '</strong> s/ juros</div>';
-	$output .= '<div class="linha-parcelamento segunda">Ou até ' . $parcelas_max . 'x de <strong>' . wc_price( $valor_12x ) . '</strong></div>';
-	$output .= '</div>';
-	
-	return $output;
+    global $product;
+
+    // Se não estiver setado, tenta pegar o produto atual (quando estiver em uma página de produto)
+    if ( ! $product && is_product() ) {
+        $product = wc_get_product( get_the_ID() );
+    }
+
+    if ( ! $product || $product->get_price() <= 0 ) {
+        return '';
+    }
+
+    $price = wc_get_price_to_display( $product );
+
+    // Configurações
+    $max_installments = 12;
+    $discount_pix_percent = 4; // 4% de desconto
+
+    // Cálculos (sem juros)
+    $valor_12x  = $price / $max_installments;
+    $valor_pix  = $price * ( 1 - ( $discount_pix_percent / 100 ) );
+
+    $output  = '<div class="pd-parcelamento-resumido shortcode-parcelamento">';
+    $output .=     '<div class="linha-parcelamento">Até ' . $max_installments . 'x de <strong>' . wc_price( $valor_12x ) . '</strong> s/ juros</div>';
+    $output .=     '<div class="linha-pix">Ou <strong>' . wc_price( $valor_pix ) . '</strong> no PIX</div>';
+    $output .= '</div>';
+
+    return $output;
 }

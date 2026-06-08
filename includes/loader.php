@@ -7,14 +7,23 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Carrega a API primeiro
+// Carrega o sistema de logging primeiro (dependência de todos os outros)
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/logger.php';
+
+// Carrega a API
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/api-client.php';
 
 // Carrega funções auxiliares de fuso horário
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/timezone-helper.php';
 
+// Carrega o gerenciador do Action Scheduler (requer WooCommerce)
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/action-scheduler-manager.php';
+
 // Carrega o gerenciador de sincronização
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
+
+// Carrega o sistema de cron dedicado (independente do Action Scheduler)
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/dedicated-cron.php';
 
 // Carrega o importador
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';

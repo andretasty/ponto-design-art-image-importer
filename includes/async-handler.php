@@ -163,8 +163,9 @@ function art_image_handle_reschedule_all() {
             ArtImageTimezoneHelper::log_with_timezone('Removido evento legacy art_image_daily_event');
         }
         
-        // Reagenda apenas o evento de sincronização completa (sync-manager.php)
-        $result = ArtImageTimezoneHelper::reschedule_event('art_image_daily_sync', $schedule_time, 'daily');
+        // Reagenda usando o novo sistema
+        require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
+        $result = ArtImageSyncManager::schedule_sync_event();
         
         if ($result) {
             ArtImageTimezoneHelper::log_with_timezone('Todos os eventos reagendados via admin');
@@ -187,25 +188,15 @@ function art_image_handle_clear_locks() {
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Permissão negada.']);
     }
-    
-    // Limpa todos os locks de transient
-    delete_transient('artimage_master_import_lock');
-    delete_transient('artimage_product_batch_lock');
-    delete_transient('artimage_category_batch_lock');
-    delete_transient('artimage_subcategory_batch_lock');
-    delete_transient('artimage_artist_batch_lock');
-    
-    // Limpa flags de cancelamento
-    delete_transient('artimage_cancel_product_import_flag');
-    delete_transient('artimage_cancel_category_import_flag');
-    delete_transient('artimage_cancel_subcategory_import_flag');
-    delete_transient('artimage_cancel_artist_import_flag');
-    
+
+    // Usa função centralizada para limpar locks e flags
+    art_image_clear_transients(['locks', 'flags']);
+
     // Limpa o lock do sync-manager
     require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
     $sync_manager = new ArtImageSyncManager();
     $sync_manager->force_clear_lock();
-    
+
     ArtImageTimezoneHelper::log_with_timezone('Todos os locks de importação limpos via admin (incluindo sync-manager)');
     wp_send_json_success(['message' => 'Locks limpos com sucesso!']);
 }
@@ -218,13 +209,10 @@ function art_image_handle_clear_queue() {
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Permissão negada.']);
     }
-    
-    // Limpa fila e contadores
-    delete_transient('artimage_product_import_queue');
-    delete_transient('artimage_product_import_total');
-    delete_transient('artimage_product_processed_count');
-    delete_transient('artimage_product_subs_list');
-    
+
+    // Usa função centralizada para limpar filas e contadores
+    art_image_clear_transients(['queues', 'counters']);
+
     ArtImageTimezoneHelper::log_with_timezone('Fila de produtos limpa via admin');
     wp_send_json_success(['message' => 'Fila limpa com sucesso!']);
 }
@@ -237,45 +225,11 @@ function art_image_handle_reset_all() {
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Permissão negada.']);
     }
-    
-    // Lista de todos os transients do plugin
-    $transients = [
-        // Locks
-        'artimage_master_import_lock',
-        'artimage_product_batch_lock',
-        'artimage_category_batch_lock',
-        'artimage_subcategory_batch_lock',
-        'artimage_artist_batch_lock',
-        
-        // Filas
-        'artimage_product_import_queue',
-        'artimage_category_import_queue',
-        'artimage_subcategory_import_queue',
-        'artimage_artist_import_queue',
-        'artimage_product_subs_list',
-        
-        // Contadores
-        'artimage_product_import_total',
-        'artimage_product_processed_count',
-        'artimage_category_import_total',
-        'artimage_category_processed_count',
-        'artimage_subcategory_import_total',
-        'artimage_subcategory_processed_count',
-        'artimage_artist_import_total',
-        'artimage_artist_processed_count',
-        
-        // Flags de cancelamento
-        'artimage_cancel_product_import_flag',
-        'artimage_cancel_category_import_flag',
-        'artimage_cancel_subcategory_import_flag',
-        'artimage_cancel_artist_import_flag',
-    ];
-    
-    foreach ($transients as $transient) {
-        delete_transient($transient);
-    }
-    
-    ArtImageTimezoneHelper::log_with_timezone('Reset completo de importação realizado via admin');
+
+    // Usa função centralizada para limpar todos os transients
+    $deleted = art_image_clear_transients('all');
+
+    ArtImageTimezoneHelper::log_with_timezone("Reset completo de importação realizado via admin ({$deleted} transients removidos)");
     wp_send_json_success(['message' => 'Reset completo realizado!']);
 }
 
@@ -328,11 +282,173 @@ function art_image_handle_cleanup_legacy() {
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Permissão negada.']);
     }
-    
+
     require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
-    
-    $result = ArtImageSyncManager::cleanup_legacy_events();
-    
+
+    $result = ArtImageSyncManager::cleanup_all_legacy_events();
+    ArtImageSyncManager::schedule_sync_event();
+
     ArtImageTimezoneHelper::log_with_timezone('Limpeza de eventos legacy executada via admin');
     wp_send_json_success(['message' => 'Eventos legacy removidos com sucesso!', 'details' => $result]);
+}
+
+// =========================================================================
+// HANDLERS AJAX PARA ACTION SCHEDULER
+// =========================================================================
+
+add_action('wp_ajax_art_image_as_get_progress', 'art_image_handle_as_get_progress');
+add_action('wp_ajax_art_image_as_start_sync', 'art_image_handle_as_start_sync');
+add_action('wp_ajax_art_image_as_cancel', 'art_image_handle_as_cancel');
+add_action('wp_ajax_art_image_as_retry_failed', 'art_image_handle_as_retry_failed');
+add_action('wp_ajax_art_image_as_get_failed', 'art_image_handle_as_get_failed');
+add_action('wp_ajax_art_image_as_cleanup', 'art_image_handle_as_cleanup');
+
+/**
+ * Retorna o progresso atual da sincronização via Action Scheduler
+ */
+function art_image_handle_as_get_progress() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+
+    if (!ArtImageASManager::is_available()) {
+        wp_send_json_error(['message' => 'Action Scheduler não disponível.']);
+    }
+
+    $progress = ArtImageASManager::get_progress();
+
+    // Adicionar próxima sincronização agendada
+    $progress['next_scheduled'] = ArtImageASManager::get_next_scheduled_sync();
+    $progress['using_action_scheduler'] = true;
+
+    wp_send_json_success($progress);
+}
+
+/**
+ * Inicia sincronização via Action Scheduler
+ */
+function art_image_handle_as_start_sync() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+
+    if (!ArtImageASManager::is_available()) {
+        wp_send_json_error(['message' => 'Action Scheduler não disponível.']);
+    }
+
+    // Verificar se já há sincronização em andamento
+    if (ArtImageASManager::is_sync_running()) {
+        wp_send_json_error(['message' => 'Já existe uma sincronização em andamento.']);
+    }
+
+    require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
+    $manager = new ArtImageSyncManager();
+    $manager->as_trigger_sync_start();
+
+    ArtImageTimezoneHelper::log_with_timezone('[AS] Sincronização iniciada via admin AJAX');
+
+    // Forçar processamento imediato das actions pendentes
+    // Isso inicia a primeira fase sem esperar pelo próximo cron
+    $processed = ArtImageASManager::run_pending_actions(5);
+    ArtImageTimezoneHelper::log_with_timezone("[AS] Actions processadas imediatamente: {$processed}");
+
+    wp_send_json_success([
+        'message' => 'Sincronização iniciada via Action Scheduler!',
+        'session_id' => get_option('artimage_as_session_id'),
+        'actions_processed' => $processed
+    ]);
+}
+
+/**
+ * Cancela todas as actions pendentes do Action Scheduler
+ */
+function art_image_handle_as_cancel() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+
+    if (!ArtImageASManager::is_available()) {
+        wp_send_json_error(['message' => 'Action Scheduler não disponível.']);
+    }
+
+    $cancelled = ArtImageASManager::cancel_all();
+
+    ArtImageTimezoneHelper::log_with_timezone("[AS] Canceladas {$cancelled} actions via admin");
+
+    wp_send_json_success([
+        'message' => "Canceladas {$cancelled} actions pendentes.",
+        'cancelled' => $cancelled
+    ]);
+}
+
+/**
+ * Retenta todas as actions falhas
+ */
+function art_image_handle_as_retry_failed() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+
+    if (!ArtImageASManager::is_available()) {
+        wp_send_json_error(['message' => 'Action Scheduler não disponível.']);
+    }
+
+    $retried = ArtImageASManager::retry_failed();
+
+    ArtImageTimezoneHelper::log_with_timezone("[AS] Retentadas {$retried} actions via admin");
+
+    wp_send_json_success([
+        'message' => "Retentadas {$retried} actions falhas.",
+        'retried' => $retried
+    ]);
+}
+
+/**
+ * Retorna lista de actions falhas para diagnóstico
+ */
+function art_image_handle_as_get_failed() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+
+    if (!ArtImageASManager::is_available()) {
+        wp_send_json_error(['message' => 'Action Scheduler não disponível.']);
+    }
+
+    $limit = isset($_POST['limit']) ? absint($_POST['limit']) : 20;
+    $failed = ArtImageASManager::get_failed_actions($limit);
+
+    wp_send_json_success([
+        'failed_actions' => $failed,
+        'count' => count($failed)
+    ]);
+}
+
+/**
+ * Limpa actions antigas completadas
+ */
+function art_image_handle_as_cleanup() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Permissão negada.']);
+    }
+
+    if (!ArtImageASManager::is_available()) {
+        wp_send_json_error(['message' => 'Action Scheduler não disponível.']);
+    }
+
+    $days = isset($_POST['days']) ? absint($_POST['days']) : 7;
+    $deleted = ArtImageASManager::cleanup_completed($days);
+
+    ArtImageTimezoneHelper::log_with_timezone("[AS] Limpas {$deleted} actions completadas via admin");
+
+    wp_send_json_success([
+        'message' => "Removidas {$deleted} actions completadas antigas.",
+        'deleted' => $deleted
+    ]);
 }
