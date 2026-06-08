@@ -868,10 +868,12 @@ add_action('init', function() {
         if (!$next) {
             ArtImageASManager::schedule_recurring_sync();
         }
-    } else {
-        if (!wp_next_scheduled('art_image_sync_event')) {
-            ArtImageSyncManager::schedule_sync_event();
-        }
+    }
+    // Evento WP-Cron legado descontinuado: sempre limpar para evitar gatilho duplicado de sync.
+    // O agendamento agora é exclusivamente via Action Scheduler (artimage_scheduled_sync),
+    // processado por um cron de servidor "wp action-scheduler run".
+    if (wp_next_scheduled('art_image_sync_event')) {
+        wp_clear_scheduled_hook('art_image_sync_event');
     }
 });
 
