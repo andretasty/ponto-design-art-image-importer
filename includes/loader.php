@@ -65,3 +65,15 @@ do_action('art_image_loaded');
 add_filter('art_image_product_import_batch_size', function() { return 5; });
 add_filter('art_image_download_timeout', function() { return 20; });
 add_filter('art_image_api_timeout', function() { return 20; });
+
+// Bloqueia DEFINITIVAMENTE o agendamento do evento WP-Cron legado art_image_sync_event.
+// Vários pontos do plugin (init, check_and_migrate, timezone-helper) tentavam reagendá-lo,
+// gerando um segundo gatilho de sync semanal em conflito com o Action Scheduler.
+// O agendamento agora é único: Action Scheduler (artimage_scheduled_sync), processado
+// por um cron de servidor "wp action-scheduler run".
+add_filter('schedule_event', function($event) {
+    if (is_object($event) && isset($event->hook) && $event->hook === 'art_image_sync_event') {
+        return false;
+    }
+    return $event;
+});
