@@ -57,7 +57,7 @@ class ArtImageSyncManager {
         }
 
         // Limpar transients de fases anteriores (evita problemas de duplicação)
-        $phases = ['categories', 'subcategories', 'artists', 'prepare_products', 'products'];
+        $phases = ['categories', 'subcategories', 'artists', 'prepare_products', 'products', 'retry_products'];
         foreach ($phases as $phase) {
             delete_transient("artimage_as_phase_{$phase}_started");
             delete_transient("artimage_as_phase_{$phase}_completed");
@@ -173,10 +173,20 @@ class ArtImageSyncManager {
                 // Não precisa fazer nada aqui, os produtos já foram agendados
                 $this->log("[AS] Fase de produtos - aguardando processamento das actions agendadas");
                 break;
+
+            case 'retry_products':
+                $rows = ArtImageFailedProducts::get_retryable();
+                $count = ArtImageASManager::schedule_retry_batches($rows);
+                $this->log("[AS] Fase retry_products: {$count} produtos re-enfileirados");
+                if ($count === 0) {
+                    $this->as_complete_sync($session_id);
+                    return;
+                }
+                break;
         }
 
         // Agendar verificação de conclusão da fase
-        $check_delay = ($phase === 'prepare_products' || $phase === 'products') ? 60 : 30;
+        $check_delay = in_array($phase, ['prepare_products', 'products', 'retry_products'], true) ? 60 : 30;
         ArtImageASManager::schedule_phase_check($phase, $session_id, $check_delay);
     }
 
@@ -191,6 +201,7 @@ class ArtImageSyncManager {
             'artists' => 'artist',
             'prepare_products' => null, // Verificação especial
             'products' => null, // Verificação especial (batches)
+            'retry_products' => null, // Verificação especial (batches retry)
         ];
 
         $entity_type = $entity_map[$phase] ?? null;
@@ -203,9 +214,9 @@ class ArtImageSyncManager {
                 return;
             }
         // Verificação especial para products (inclui batches)
-        } elseif ($phase === 'products') {
+        } elseif ($phase === 'products' || $phase === 'retry_products') {
             if (!ArtImageASManager::is_products_phase_complete()) {
-                $this->log("[AS] Fase produtos (batches) ainda em progresso, verificando novamente em 30s");
+                $this->log("[AS] Fase {$phase} (batches) ainda em progresso, verificando novamente em 30s");
                 ArtImageASManager::schedule_phase_check($phase, $session_id, 30);
                 return;
             }
@@ -228,7 +239,7 @@ class ArtImageSyncManager {
         $this->log("[AS] Fase {$phase} completa!");
 
         // Determinar próxima fase
-        $phases = ['categories', 'subcategories', 'artists', 'prepare_products', 'products'];
+        $phases = ['categories', 'subcategories', 'artists', 'prepare_products', 'products', 'retry_products'];
         $current_index = array_search($phase, $phases);
 
         if ($current_index === false) {
@@ -236,9 +247,29 @@ class ArtImageSyncManager {
             return;
         }
 
-        // Se é a última fase (products), finalizar sincronização
+        // Após 'products': se houver retryables, ir para a fase de retry; senão concluir.
         if ($phase === 'products') {
-            $this->as_complete_sync($session_id);
+            if (!empty(ArtImageFailedProducts::get_retryable())) {
+                delete_transient('artimage_as_phase_retry_products_started');
+                delete_transient('artimage_as_phase_retry_products_completed');
+                $this->log("[AS] Avançando para fase: retry_products");
+                ArtImageASManager::schedule_phase_start('retry_products', $session_id);
+            } else {
+                $this->as_complete_sync($session_id);
+            }
+            return;
+        }
+
+        // Após 'retry_products': se ainda há retryables (attempts < 3), repetir; senão concluir.
+        if ($phase === 'retry_products') {
+            if (!empty(ArtImageFailedProducts::get_retryable())) {
+                delete_transient('artimage_as_phase_retry_products_started');
+                delete_transient('artimage_as_phase_retry_products_completed');
+                $this->log("[AS] Retry: ainda há produtos elegíveis, nova rodada");
+                ArtImageASManager::schedule_phase_start('retry_products', $session_id);
+            } else {
+                $this->as_complete_sync($session_id);
+            }
             return;
         }
 
@@ -356,10 +387,26 @@ class ArtImageSyncManager {
             $this->log("[AS] Batch processado: {$imported} novos, {$updated} atualizados, {$failed} falhas | Total: {$processed}/{$total}");
         }
 
-        // Log de erros específicos
+        // Log + registro de erros por-produto que NÃO mataram a ação
         if (!empty($result['errors'])) {
             foreach ($result['errors'] as $error) {
                 $this->log("[AS] Erro produto {$error['sku']}: {$error['error']}");
+                $sku = (string)($error['sku'] ?? '');
+                if ($sku !== '' && $sku !== 'unknown') {
+                    $payload = [];
+                    $link = '';
+                    $name = '';
+                    foreach ($products as $data) {
+                        $p = $data['product_data'] ?? $data;
+                        if ((string)($p['code'] ?? '') === $sku) {
+                            $payload = $data;
+                            $link = (string)($p['link'] ?? '');
+                            $name = (string)($p['title'] ?? '');
+                            break;
+                        }
+                    }
+                    ArtImageFailedProducts::record($sku, $link, $name, 'exception', $payload);
+                }
             }
         }
     }

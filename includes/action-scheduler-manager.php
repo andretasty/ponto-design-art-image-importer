@@ -172,6 +172,42 @@ class ArtImageASManager {
     }
 
     /**
+     * Re-enfileira produtos com falha em lotes de 1 (evita re-bater nos 300s).
+     * Incrementa attempts dos SKUs re-enfileirados.
+     *
+     * @param array<int,object> $rows linhas de ArtImageFailedProducts::get_retryable()
+     * @return int quantidade re-enfileirada
+     */
+    public static function schedule_retry_batches(array $rows): int
+    {
+        if (!self::is_available() || empty($rows)) {
+            return 0;
+        }
+        $scheduled = 0;
+        $codes = [];
+        $timestamp = time();
+        foreach ($rows as $row) {
+            $payload = json_decode($row->payload, true);
+            if (!is_array($payload) || empty($payload)) {
+                continue;
+            }
+            as_schedule_single_action(
+                $timestamp + ($scheduled * self::PRODUCT_BATCH_DELAY),
+                self::HOOK_PREFIX . 'import_products_batch',
+                ['products' => [$payload]],
+                self::GROUP
+            );
+            $codes[] = $row->code;
+            $scheduled++;
+        }
+        if (!empty($codes)) {
+            ArtImageFailedProducts::increment_attempts($codes);
+        }
+        ArtImageTimezoneHelper::log_with_timezone("[AS] Retry: re-enfileirados {$scheduled} produtos (lote 1)");
+        return $scheduled;
+    }
+
+    /**
      * Agenda início de uma fase de importação
      */
     public static function schedule_phase_start(string $phase, string $session_id, int $delay = 0): void {
