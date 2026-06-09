@@ -28,6 +28,7 @@ add_action('wp_ajax_art_image_reset_all', 'art_image_handle_reset_all');
 add_action('wp_ajax_art_image_force_sync', 'art_image_handle_force_sync');
 add_action('wp_ajax_art_image_test_cron', 'art_image_handle_test_cron');
 add_action('wp_ajax_art_image_cleanup_legacy', 'art_image_handle_cleanup_legacy');
+add_action('wp_ajax_art_image_retry_failed_products', 'art_image_handle_retry_failed_products');
 
 function art_image_handle_get_active_imports() {
     check_ajax_referer('art_image_nonce');
@@ -450,5 +451,22 @@ function art_image_handle_as_cleanup() {
     wp_send_json_success([
         'message' => "Removidas {$deleted} actions completadas antigas.",
         'deleted' => $deleted
+    ]);
+}
+
+/**
+ * Retry manual de produtos com falha (aba Falhas)
+ */
+function art_image_handle_retry_failed_products() {
+    check_ajax_referer('art_image_nonce');
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Sem permissão']);
+    }
+    // Retry manual: force = true (ignora o limite de 3 tentativas)
+    $rows = ArtImageFailedProducts::get_retryable(true);
+    $count = ArtImageASManager::schedule_retry_batches($rows);
+    wp_send_json_success([
+        'message' => "{$count} produto(s) re-enfileirado(s). Serão processados pelo cron.",
+        'count' => $count,
     ]);
 }
