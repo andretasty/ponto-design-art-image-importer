@@ -50,9 +50,18 @@ Gravação com `INSERT ... ON DUPLICATE KEY UPDATE` por `code` → evita corrida
 
 ### 3.2 Pontos de captura (escopo "tudo")
 
-1. **Lote 300s / exception (ação morta):** via o hook do Action Scheduler `action_scheduler_failed_execution`. Quando uma ação `artimage_import_products_batch` falha, o handler extrai a lista de produtos dos `args` e registra cada um (`reason = lote_300s`). É a forma confiável de capturar a ação que foi morta no meio (não dá para capturar de dentro dela).
-2. **Timeout de detalhe (degradado):** no fluxo de importação do produto, quando `get_product_details()` retorna vazio por erro/timeout → registra (`reason = timeout_detalhe`). O produto continua sendo criado degradado, mas fica marcado.
-3. **Falha de imagem:** quando o download da imagem retorna falha → registra (`reason = falha_imagem`).
+Importante: existem **dois caminhos de importação de produto** no código, e os dois usam `get_product_details()` e download de imagem:
+- **Caminho Action Scheduler (sync agendado):** `as_import_products_batch()` → `import_single_product()` (`sync-manager.php`/`importer.php` ~1410+). É o driver principal da funcionalidade.
+- **Caminho manual/AJAX:** `import_products_batch()` (`importer.php` ~650-790).
+
+As capturas 2 e 3 devem ser cabladas **nos dois caminhos** (extrair a lógica de captura para um método único de `ArtImageFailedProducts` chamado em ambos), para não perder falhas em importação manual.
+
+1. **Ação morta — lote 300s / fatal (`reason = lote_300s`):** via o hook do Action Scheduler `action_scheduler_failed_execution`. Quando uma ação `artimage_import_products_batch` falha por completo (estouro de 300s ou fatal), o handler extrai a lista de produtos dos `args` e registra cada um. É a forma confiável de capturar a ação morta no meio (não dá para capturar de dentro dela).
+2. **Erros por-produto dentro de um lote que NÃO mata a ação (`reason = exception`):** o `as_import_products_batch()` agrega erros por produto em `$result['errors']` (sku + mensagem) e **conclui a ação mesmo assim** — logo o hook do item 1 não dispara. Após processar o lote, o handler percorre `$result['errors']` e registra cada produto com `reason = exception` (e a mensagem no log).
+3. **Timeout de detalhe (degradado) (`reason = timeout_detalhe`):** quando `get_product_details()` retorna vazio por erro/timeout → registra. O produto continua sendo criado degradado, mas fica marcado.
+4. **Falha de imagem (`reason = falha_imagem`):** quando o download da imagem retorna falha → registra.
+
+Mapa de `reason`: `lote_300s` (item 1) · `exception` (item 2) · `timeout_detalhe` (item 3) · `falha_imagem` (item 4).
 
 ### 3.3 Resolução (saída da lista)
 
@@ -88,8 +97,9 @@ Nova aba em `admin/admin-ui.php` (segue o padrão existente: link `nav-tab` + bl
   - `increment_attempts($codes)`
   - `retry_all($force = false)` (re-enfileira via Action Scheduler, lote 1)
 - **`includes/loader.php`:** `require_once` do novo arquivo; registra `maybe_create_table` na ativação/init; registra o hook `action_scheduler_failed_execution`.
-- **`includes/importer.php`:** chama `record(... timeout_detalhe/falha_imagem ...)` nos pontos de captura 2 e 3; chama `resolve($code)` no sucesso.
-- **`includes/action-scheduler-manager.php`:** após a fase `products`, agenda a fase de retry; handler do hook de falha (captura 1) registra os produtos do lote morto.
+- **`includes/importer.php`:** chama `record(... timeout_detalhe / falha_imagem ...)` nas capturas 3 e 4, **nos dois caminhos** (`import_single_product` e `import_products_batch`); chama `resolve($code)` no sucesso de importação de um produto (nos dois caminhos).
+- **`includes/sync-manager.php`:** após o lote `as_import_products_batch()`, percorre `$result['errors']` e registra (captura 2, `exception`).
+- **`includes/action-scheduler-manager.php`:** após a fase `products`, agenda a fase de retry (lote 1); registra o handler do hook `action_scheduler_failed_execution` (captura 1) que extrai e grava os produtos do lote morto.
 - **`admin/admin-ui.php`:** nova aba "Falhas" + renderização da lista.
 - **`includes/async-handler.php`:** handler AJAX `art_image_retry_failed_products` (nonce) para o botão "Tentar todos agora".
 
@@ -101,6 +111,7 @@ Nova aba em `admin/admin-ui.php` (segue o padrão existente: link `nav-tab` + bl
 - **Produto degradado que depois importa OK no retry:** `resolve()` remove o registro.
 - **Mesmo produto falha de 2 formas** (ex.: lote_300s e depois timeout_detalhe): 1 linha por `code`, `reason` reflete a falha mais recente.
 - **`payload` ausente** (falha capturada sem dados de listagem completos): o retry tenta pelo `source_url`/`code`; se não der, mantém pendente.
+- **`payload` E `source_url` ausentes** (args malformados/vazios no item 1): registra com `code` apenas, marca como **não-retryável** (não entra no retry automático), mas continua **listado na aba** para o operador ver/tratar. Evita re-enfileirar algo que não tem como ser reimportado.
 
 ## 6. Testes
 
