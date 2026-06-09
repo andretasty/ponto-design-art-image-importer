@@ -648,6 +648,15 @@ class ArtImageImporter
                 
                 // Buscar detalhes do produto da API
                 $details = !empty($p_data['link']) ? $this->client->get_product_details($p_data['link']) : [];
+                if (!empty($p_data['link']) && empty($details)) {
+                    ArtImageFailedProducts::record(
+                        $sku,
+                        (string)($p_data['link'] ?? ''),
+                        (string)($p_data['title'] ?? ''),
+                        'timeout_detalhe',
+                        $item_to_process
+                    );
+                }
                 $details_count = empty($details) ? 0 : count($details);
                 $logs[] = "Detalhes obtidos da API: " . ($details_count === 0 ? "Nenhum" : "{$details_count} campos");
                 art_image_log_product_processing($sku, 'DETALHES_API_OBTIDOS', ['campos' => $details_count, 'link' => $p_data['link'] ?? 'N/A']);
@@ -701,6 +710,7 @@ class ArtImageImporter
 
                 if ($new_prod_id) {
                     $logs[] = ($product_id ? "Produto atualizado" : "Produto criado") . ": {$product->get_name()} (ID: {$new_prod_id})";
+                    ArtImageFailedProducts::resolve($sku);
                     art_image_log_product_processing($sku, 'DEFININDO_TERMOS');
                     
                     // Definir artista se disponível
@@ -747,6 +757,13 @@ class ArtImageImporter
                                 } else {
                                     $logs[] = "ERRO: Falha ao baixar imagem principal";
                                     art_image_log_product_processing($sku, 'ERRO_DOWNLOAD_IMAGEM_PRINCIPAL', ['url' => $main_image_url]);
+                                    ArtImageFailedProducts::record(
+                                        $sku,
+                                        (string)($p_data['link'] ?? ''),
+                                        (string)($p_data['title'] ?? ''),
+                                        'falha_imagem',
+                                        $item_to_process
+                                    );
                                 }
                             } else {
                                 $logs[] = "AVISO: URL da imagem principal inválida: " . $main_image_url;
@@ -1425,6 +1442,16 @@ class ArtImageImporter
             $details = [];
             if (!empty($p_data['link'])) {
                 $details = $this->client->get_product_details($p_data['link']);
+                // Captura: detalhe não veio (timeout/erro) => produto entra degradado
+                if (empty($details)) {
+                    ArtImageFailedProducts::record(
+                        $sku,
+                        (string)($p_data['link'] ?? ''),
+                        (string)($p_data['title'] ?? ''),
+                        'timeout_detalhe',
+                        $data
+                    );
+                }
             }
 
             // Verificar se produto já existe
@@ -1500,6 +1527,14 @@ class ArtImageImporter
                         if ($thumb_id) {
                             set_post_thumbnail($new_prod_id, $thumb_id);
                             $images_processed++;
+                        } else {
+                            ArtImageFailedProducts::record(
+                                $sku,
+                                (string)($p_data['link'] ?? ''),
+                                (string)($p_data['title'] ?? ''),
+                                'falha_imagem',
+                                $data
+                            );
                         }
                     }
                 }
@@ -1531,6 +1566,9 @@ class ArtImageImporter
             if ($artimage_sync_tracker) {
                 $artimage_sync_tracker->mark_product_imported($new_prod_id, $sku);
             }
+
+            // Importou com sucesso: remove qualquer registro de falha deste SKU
+            ArtImageFailedProducts::resolve($sku);
 
             return [
                 'success' => true,
