@@ -709,4 +709,45 @@ class ArtImageASManager {
         update_option('artimage_as_current_phase', $phase);
         ArtImageTimezoneHelper::log_with_timezone("[AS] Fase atualizada: {$phase}");
     }
+
+    /**
+     * Handler do hook action_scheduler_failed_execution.
+     * Quando uma ação import_products_batch morre (300s/fatal), registra os
+     * produtos do lote como falha (lote_300s) para retry posterior.
+     *
+     * @param int $action_id
+     */
+    public static function on_action_failed($action_id): void
+    {
+        if (!function_exists('ActionScheduler')) {
+            return;
+        }
+        try {
+            $store = ActionScheduler::store();
+            $action = $store->fetch_action($action_id);
+            if (!$action || $action->get_hook() !== self::HOOK_PREFIX . 'import_products_batch') {
+                return;
+            }
+            $args = $action->get_args();
+            $products = $args['products'] ?? [];
+            foreach ($products as $data) {
+                $p = $data['product_data'] ?? $data;
+                $code = isset($p['code']) ? sanitize_text_field($p['code']) : '';
+                if ($code === '') {
+                    continue;
+                }
+                ArtImageFailedProducts::record(
+                    $code,
+                    (string)($p['link'] ?? ''),
+                    (string)($p['title'] ?? ''),
+                    'lote_300s',
+                    $data
+                );
+            }
+        } catch (\Throwable $e) {
+            if (class_exists('ArtImageLogger')) {
+                ArtImageLogger::error('Falha ao registrar lote morto: ' . $e->getMessage());
+            }
+        }
+    }
 }

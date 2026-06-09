@@ -83,3 +83,6 @@ add_filter('schedule_event', function($event) {
 
 // Garante a tabela de falhas (idempotente; cobre plugin já ativo em produção)
 add_action('init', ['ArtImageFailedProducts', 'maybe_create_table']);
+
+// Captura lotes de produto que morrem (300s/fatal) no Action Scheduler
+add_action('action_scheduler_failed_execution', ['ArtImageASManager', 'on_action_failed'], 10, 1);
