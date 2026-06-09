@@ -643,12 +643,14 @@ class ArtImageImporter
                 }
                 
                 $sku = sanitize_text_field($p_data['code']);
+                $degraded = false;
                 $logs[] = "Processando produto SKU: {$sku}";
                 art_image_log_product_processing($sku, 'INICIANDO_PROCESSAMENTO');
                 
                 // Buscar detalhes do produto da API
                 $details = !empty($p_data['link']) ? $this->client->get_product_details($p_data['link']) : [];
                 if (!empty($p_data['link']) && empty($details)) {
+                    $degraded = true;
                     ArtImageFailedProducts::record(
                         $sku,
                         (string)($p_data['link'] ?? ''),
@@ -710,7 +712,9 @@ class ArtImageImporter
 
                 if ($new_prod_id) {
                     $logs[] = ($product_id ? "Produto atualizado" : "Produto criado") . ": {$product->get_name()} (ID: {$new_prod_id})";
-                    ArtImageFailedProducts::resolve($sku);
+                    if (!$degraded) {
+                        ArtImageFailedProducts::resolve($sku);
+                    }
                     art_image_log_product_processing($sku, 'DEFININDO_TERMOS');
                     
                     // Definir artista se disponível
@@ -757,6 +761,7 @@ class ArtImageImporter
                                 } else {
                                     $logs[] = "ERRO: Falha ao baixar imagem principal";
                                     art_image_log_product_processing($sku, 'ERRO_DOWNLOAD_IMAGEM_PRINCIPAL', ['url' => $main_image_url]);
+                                    $degraded = true;
                                     ArtImageFailedProducts::record(
                                         $sku,
                                         (string)($p_data['link'] ?? ''),
@@ -1437,6 +1442,7 @@ class ArtImageImporter
             }
 
             $sku = sanitize_text_field($p_data['code']);
+            $degraded = false;
 
             // Buscar detalhes completos da API
             $details = [];
@@ -1444,6 +1450,7 @@ class ArtImageImporter
                 $details = $this->client->get_product_details($p_data['link']);
                 // Captura: detalhe não veio (timeout/erro) => produto entra degradado
                 if (empty($details)) {
+                    $degraded = true;
                     ArtImageFailedProducts::record(
                         $sku,
                         (string)($p_data['link'] ?? ''),
@@ -1528,6 +1535,7 @@ class ArtImageImporter
                             set_post_thumbnail($new_prod_id, $thumb_id);
                             $images_processed++;
                         } else {
+                            $degraded = true;
                             ArtImageFailedProducts::record(
                                 $sku,
                                 (string)($p_data['link'] ?? ''),
@@ -1567,8 +1575,11 @@ class ArtImageImporter
                 $artimage_sync_tracker->mark_product_imported($new_prod_id, $sku);
             }
 
-            // Importou com sucesso: remove qualquer registro de falha deste SKU
-            ArtImageFailedProducts::resolve($sku);
+            // Importou com sucesso E completo: remove o registro de falha deste SKU.
+            // Se entrou degradado (detalhe/imagem falhou), mantém para retry.
+            if (!$degraded) {
+                ArtImageFailedProducts::resolve($sku);
+            }
 
             return [
                 'success' => true,
