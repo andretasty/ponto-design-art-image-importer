@@ -25,8 +25,9 @@ require_once ART_IMAGE_PLUGIN_DIR . 'includes/action-scheduler-manager.php';
 // Carrega o gerenciador de sincronização
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
 
-// Carrega o sistema de cron dedicado (independente do Action Scheduler)
-require_once ART_IMAGE_PLUGIN_DIR . 'includes/dedicated-cron.php';
+// Nota: dedicated-cron.php foi descontinuado (sistema de cron redundante). O
+// processamento agora é único: Action Scheduler + cron de servidor
+// "wp action-scheduler run". Não carregar para evitar cron concorrente.
 
 // Carrega o importador
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
