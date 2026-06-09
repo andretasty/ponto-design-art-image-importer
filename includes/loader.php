@@ -10,6 +10,9 @@ if (!defined('ABSPATH')) {
 // Carrega o sistema de logging primeiro (dependência de todos os outros)
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/logger.php';
 
+// Rastreamento de falhas de produto
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/failed-products.php';
+
 // Carrega a API
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/api-client.php';
 
@@ -77,3 +80,6 @@ add_filter('schedule_event', function($event) {
     }
     return $event;
 });
+
+// Garante a tabela de falhas (idempotente; cobre plugin já ativo em produção)
+add_action('init', ['ArtImageFailedProducts', 'maybe_create_table']);
