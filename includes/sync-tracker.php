@@ -224,37 +224,6 @@ class ArtImageSyncTracker {
 global $artimage_sync_tracker;
 $artimage_sync_tracker = new ArtImageSyncTracker();
 
-// Endpoint AJAX para limpeza manual
-add_action('wp_ajax_art_image_manual_cleanup', function() {
-    check_ajax_referer('art_image_nonce');
-    
-    if (!current_user_can('manage_options')) {
-        wp_send_json_error('Sem permissão');
-    }
-    
-    global $artimage_sync_tracker;
-    
-    if (!$artimage_sync_tracker) {
-        wp_send_json_error('Sistema de tracking não disponível');
-    }
-    
-    $cleanup_enabled = get_option('artimage_enable_cleanup', true);
-    $dry_run = get_option('artimage_cleanup_dry_run', false);
-    
-    if (!$cleanup_enabled && !$dry_run) {
-        wp_send_json_error('Limpeza automática está desabilitada');
-    }
-    
-    // Força o início de uma nova sessão para limpeza manual
-    $artimage_sync_tracker->start_sync_session();
-    
-    $results = $artimage_sync_tracker->finish_sync_session([
-        'cleanup_enabled' => true,
-        'dry_run' => $dry_run
-    ]);
-    
-    $message = $dry_run ? 'Simulação concluída' : 'Limpeza executada';
-    $message .= " - Produtos: {$results['products_deleted']}, Categorias: {$results['categories_deleted']}, Artistas: {$results['artists_deleted']}";
-    
-    wp_send_json_success(['message' => $message, 'results' => $results]);
-}); 
+// Endpoint AJAX de limpeza manual REMOVIDO: além da funcionalidade estar
+// desativada, ele iniciava uma sessão nova e limpava em seguida — o que
+// trataria o catálogo inteiro como órfão.

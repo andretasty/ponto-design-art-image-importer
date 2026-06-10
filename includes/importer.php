@@ -617,8 +617,10 @@ class ArtImageImporter
         
         if (empty($product_queue)) {
             $logs[] = "Importação de produtos concluída.";
+            // Limpeza automática de órfãos DESATIVADA: o critério atual (não importado
+            // nesta sessão) confunde falha de import com remoção na origem.
             if (isset($GLOBALS['artimage_sync_tracker'])) {
-                 $GLOBALS['artimage_sync_tracker']->finish_sync_session(['cleanup_enabled' => true, 'dry_run' => false]);
+                 $GLOBALS['artimage_sync_tracker']->finish_sync_session(['cleanup_enabled' => false, 'dry_run' => false]);
             }
             $this->cleanup_import('products');
             return ['status' => 'completed', 'logs' => $logs, 'has_more' => false];

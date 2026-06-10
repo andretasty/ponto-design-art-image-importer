@@ -158,31 +158,9 @@ add_action('admin_init', function () {
         ['label_for' => 'art_image_discount_percent', 'class' => 'art-image-discount-field', 'data-setting' => 'art_image_discount_percent']
     );
 
-    // Nova seção para configurações de sincronização
-    add_settings_section(
-        'art_image_sync_section',
-        __('Configurações de Sincronização', 'art-image'),
-        function() {
-            echo '<p>Configure o comportamento da sincronização automática de dados.</p>';
-        },
-        'art_image_settings'
-    );
-
-    register_setting('art_image_settings_group', 'artimage_enable_cleanup');
-
-    add_settings_field(
-        'artimage_enable_cleanup',
-        __('Ativar Limpeza Automática', 'art-image'),
-        function () {
-            $checked = checked(get_option('artimage_enable_cleanup', '1'), '1', false);
-            echo "<input type='checkbox' name='artimage_enable_cleanup' value='1' $checked /> ";
-            echo "<span>Remover automaticamente itens que não estão mais na fonte externa</span>";
-            echo "<p class='description'>Se ativado, produtos, categorias e artistas que não forem encontrados durante a importação serão removidos do site.</p>";
-        },
-        'art_image_settings',
-        'art_image_sync_section',
-        ['label_for' => 'artimage_enable_cleanup']
-    );
+    // Limpeza automática de órfãos removida da interface: funcionalidade
+    // desativada por decisão de produto (o critério atual poderia apagar
+    // produtos válidos quando um import falha).
 });
 
 /**

@@ -420,21 +420,14 @@ class ArtImageSyncManager {
         // Finalizar sessão de tracking e executar limpeza
         global $artimage_sync_tracker;
         if (isset($artimage_sync_tracker) && $artimage_sync_tracker) {
-            $cleanup_enabled = get_option('artimage_enable_cleanup', true);
-            $dry_run = get_option('artimage_cleanup_dry_run', false);
-
-            $this->log("[AS] Finalizando tracking (cleanup: " . ($cleanup_enabled ? 'sim' : 'não') . ")");
-
-            $cleanup_results = $artimage_sync_tracker->finish_sync_session([
-                'cleanup_enabled' => $cleanup_enabled,
-                'dry_run' => $dry_run
+            // Limpeza automática de órfãos DESATIVADA por decisão de produto: o critério
+            // atual (não importado nesta sessão) confunde falha de import com remoção na
+            // origem e poderia apagar produtos válidos.
+            $this->log("[AS] Finalizando tracking (cleanup desativado)");
+            $artimage_sync_tracker->finish_sync_session([
+                'cleanup_enabled' => false,
+                'dry_run' => false
             ]);
-
-            if ($cleanup_enabled && !$dry_run) {
-                $this->log("[AS] Limpeza: {$cleanup_results['products_deleted']} produtos, " .
-                    "{$cleanup_results['categories_deleted']} categorias, " .
-                    "{$cleanup_results['artists_deleted']} artistas removidos");
-            }
         }
 
         // Estatísticas finais
@@ -773,17 +766,11 @@ class ArtImageSyncManager {
 
             global $artimage_sync_tracker;
             if (isset($artimage_sync_tracker) && $artimage_sync_tracker) {
-                $cleanup_enabled = get_option('artimage_enable_cleanup', true);
-                $dry_run = get_option('artimage_cleanup_dry_run', false);
-
-                $cleanup_results = $artimage_sync_tracker->finish_sync_session([
-                    'cleanup_enabled' => $cleanup_enabled,
-                    'dry_run' => $dry_run
+                // Limpeza automática de órfãos DESATIVADA (ver as_complete_sync).
+                $artimage_sync_tracker->finish_sync_session([
+                    'cleanup_enabled' => false,
+                    'dry_run' => false
                 ]);
-
-                if ($cleanup_enabled) {
-                    $this->log("Limpeza: {$cleanup_results['products_deleted']} produtos, {$cleanup_results['categories_deleted']} categorias");
-                }
             }
         }
 
