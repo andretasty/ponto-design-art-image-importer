@@ -19,6 +19,49 @@ add_action('admin_menu', function () {
     );
 });
 
+/**
+ * Painel de status da sincronização (home).
+ * A sincronização roda exclusivamente via Action Scheduler + cron de servidor;
+ * este painel é somente leitura.
+ */
+function art_image_render_status_panel() {
+    $running = class_exists('ArtImageASManager') && ArtImageASManager::is_sync_running();
+    $progress = class_exists('ArtImageASManager') ? ArtImageASManager::get_progress() : [];
+    $last_completed = get_option('artimage_as_last_completed');
+    $next = class_exists('ArtImageASManager') ? ArtImageASManager::get_next_scheduled_sync() : null;
+    $failures = class_exists('ArtImageFailedProducts') ? ArtImageFailedProducts::count_pending() : 0;
+
+    echo '<div style="background:#fff;border:1px solid #c3c4c7;border-left-width:4px;border-left-color:' . ($running ? '#00a32a' : '#72aee6') . ';padding:12px 16px;margin:16px 0;">';
+
+    if ($running) {
+        $phase = isset($progress['current_phase']) ? $progress['current_phase'] : '?';
+        $pending = isset($progress['total_pending']) ? (int) $progress['total_pending'] : 0;
+        $complete = isset($progress['total_complete']) ? (int) $progress['total_complete'] : 0;
+        echo '<p style="margin:0 0 6px;"><strong style="color:#00a32a;">&#9679; Sincronização em andamento</strong>';
+        echo ' — fase: <code>' . esc_html($phase) . '</code>';
+        echo ' &middot; ' . esc_html((string) $complete) . ' ações concluídas';
+        if ($pending > 0) {
+            echo ' &middot; ' . esc_html((string) $pending) . ' na fila';
+        }
+        echo '</p>';
+    } else {
+        echo '<p style="margin:0 0 6px;"><strong style="color:#2271b1;">&#9679; Nenhuma sincronização em andamento</strong></p>';
+    }
+
+    echo '<p style="margin:0;color:#50575e;">';
+    echo 'Última concluída: <strong>' . esc_html($last_completed ? $last_completed : '—') . '</strong>';
+    echo ' &middot; Próxima agendada: <strong>' . esc_html($next ? $next : '—') . '</strong>';
+    echo ' &middot; Falhas pendentes: ';
+    if ($failures > 0) {
+        echo '<a href="?page=art-image&tab=failures"><strong style="color:#d63638;">' . esc_html((string) $failures) . '</strong></a>';
+    } else {
+        echo '<strong style="color:#00a32a;">0</strong>';
+    }
+    echo '</p>';
+
+    echo '</div>';
+}
+
 function art_image_render_admin_page() {
     $active_tab = isset($_GET['tab']) ? sanitize_key($_GET['tab']) : 'settings';
 
@@ -27,12 +70,11 @@ function art_image_render_admin_page() {
     echo '<h2 class="nav-tab-wrapper">';
     echo '<a href="?page=art-image&tab=settings" class="nav-tab ' . ($active_tab === 'settings' ? 'nav-tab-active' : '') . '">Configurações</a>';
     echo '<a href="?page=art-image&tab=discounts" class="nav-tab ' . ($active_tab === 'discounts' ? 'nav-tab-active' : '') . '">Descontos</a>';
-    echo '<a href="?page=art-image&tab=manual_import" class="nav-tab ' . ($active_tab === 'manual_import' ? 'nav-tab-active' : '') . '">Importação Manual</a>';
-    echo '<a href="?page=art-image&tab=diagnostics" class="nav-tab ' . ($active_tab === 'diagnostics' ? 'nav-tab-active' : '') . '">Diagnóstico</a>';
     echo '<a href="?page=art-image&tab=failures" class="nav-tab ' . ($active_tab === 'failures' ? 'nav-tab-active' : '') . '">Falhas</a>';
     echo '</h2>';
 
     if ($active_tab === 'settings') {
+        art_image_render_status_panel();
         echo '<form method="post" action="options.php">';
         settings_fields('art_image_settings_group');
         do_settings_sections('art_image_settings');
@@ -46,51 +88,6 @@ function art_image_render_admin_page() {
         do_settings_sections('art_image_discounts');
         submit_button();
         echo '</form>';
-    }
-
-    if ($active_tab === 'manual_import') {
-        echo '<div class="art-image-admin">';
-
-        // === SEÇÃO IMPORTAÇÃO MANUAL (AJAX) ===
-        echo '<h3><span class="dashicons dashicons-upload" style="margin-right: 5px;"></span>Importação Manual</h3>';
-        echo '<p>Use os botões abaixo para importar dados manualmente. O log será exibido em tempo real.</p>';
-
-        echo '<div id="manual-import-section">';
-        echo '<div class="import-buttons">';
-        echo '<button class="button" data-type="categories"><span class="status-indicator idle"></span>Importar Categorias</button>';
-        echo '<button class="button" data-type="subcategories"><span class="status-indicator idle"></span>Importar Subcategorias</button>';
-        echo '<button class="button button-primary" data-type="products"><span class="status-indicator idle"></span>Importar Produtos</button>';
-        echo '<button class="button" data-type="artists"><span class="status-indicator idle"></span>Importar Artistas</button>';
-        echo '</div>';
-
-        echo '<div class="import-progress" id="import-progress">';
-        echo '<div class="progress-bar">';
-        echo '<div class="progress-fill" id="progress-fill">0%</div>';
-        echo '</div>';
-        echo '<div class="progress-stats">';
-        echo '<span id="progress-text">Aguardando início...</span>';
-        echo '<span id="progress-time"></span>';
-        echo '</div>';
-        echo '</div>';
-
-        echo '<div class="import-actions">';
-        echo '<button class="button" id="clear-log">Limpar Log</button>';
-        echo '<button class="button" id="cancel-import" style="display:none;">Cancelar Importação</button>';
-        echo '</div>';
-
-        echo '<pre id="import-log"></pre>';
-        echo '</div>'; // End #manual-import-section
-
-        echo '<div id="active-imports-section" style="margin-top: 20px;">';
-        echo '<h3>Processos de Importação em Andamento</h3>';
-        echo '<div id="active-imports-list">Nenhum processo em andamento no momento.</div>';
-        echo '</div>';
-
-        echo '</div>'; // End .art-image-admin
-    }
-
-    if ($active_tab === 'diagnostics') {
-        require_once ART_IMAGE_PLUGIN_DIR . 'admin/diagnostics.php';
     }
 
     if ($active_tab === 'failures') {
@@ -152,22 +149,10 @@ function art_image_render_admin_page() {
 add_action('admin_enqueue_scripts', function ($hook) {
     if ($hook !== 'toplevel_page_art-image') return;
 
-    wp_enqueue_script(
-        'art-image-import-logs',
-        ART_IMAGE_PLUGIN_URL . 'admin/assets/js/import-logs.js',
-        [],
-        ART_IMAGE_VERSION,
-        true
-    );
-
     wp_enqueue_style(
         'art-image-admin-style',
         ART_IMAGE_PLUGIN_URL . 'admin/assets/css/admin-style.css',
         [],
         ART_IMAGE_VERSION
     );
-
-    wp_localize_script('art-image-import-logs', 'art_image_ajax', [
-        'nonce' => wp_create_nonce('art_image_nonce')
-    ]);
 });
