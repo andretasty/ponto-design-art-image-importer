@@ -20,6 +20,20 @@ add_action('admin_menu', function () {
 });
 
 /**
+ * Formata datetime MySQL (Y-m-d H:i:s) como dd/mm/yyyy HH:MM.
+ */
+function art_image_format_datetime($mysql_datetime) {
+    if (empty($mysql_datetime)) {
+        return '—';
+    }
+    $ts = strtotime($mysql_datetime);
+    if (!$ts) {
+        return (string) $mysql_datetime;
+    }
+    return date('d/m/Y H:i', $ts);
+}
+
+/**
  * Painel de status da sincronização (home).
  * A sincronização roda exclusivamente via Action Scheduler + cron de servidor;
  * este painel é somente leitura.
@@ -49,8 +63,8 @@ function art_image_render_status_panel() {
     }
 
     echo '<p style="margin:0;color:#50575e;">';
-    echo 'Última concluída: <strong>' . esc_html($last_completed ? $last_completed : '—') . '</strong>';
-    echo ' &middot; Próxima agendada: <strong>' . esc_html($next ? $next : '—') . '</strong>';
+    echo 'Última concluída: <strong>' . esc_html(art_image_format_datetime($last_completed)) . '</strong>';
+    echo ' &middot; Próxima agendada: <strong>' . esc_html(art_image_format_datetime($next)) . '</strong>';
     echo ' &middot; Falhas pendentes: ';
     if ($failures > 0) {
         echo '<a href="?page=art-image&tab=failures"><strong style="color:#d63638;">' . esc_html((string) $failures) . '</strong></a>';
@@ -65,12 +79,17 @@ function art_image_render_status_panel() {
 function art_image_render_admin_page() {
     $active_tab = isset($_GET['tab']) ? sanitize_key($_GET['tab']) : 'settings';
 
+    $failures_count = class_exists('ArtImageFailedProducts') ? ArtImageFailedProducts::count_pending() : 0;
+    $failures_badge = $failures_count > 0
+        ? ' <span style="display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:#d63638;color:#fff;font-size:11px;line-height:18px;text-align:center;vertical-align:top;">' . esc_html((string) $failures_count) . '</span>'
+        : '';
+
     echo '<div class="wrap">';
     echo '<h1>Art Image</h1>';
     echo '<h2 class="nav-tab-wrapper">';
     echo '<a href="?page=art-image&tab=settings" class="nav-tab ' . ($active_tab === 'settings' ? 'nav-tab-active' : '') . '">Configurações</a>';
     echo '<a href="?page=art-image&tab=discounts" class="nav-tab ' . ($active_tab === 'discounts' ? 'nav-tab-active' : '') . '">Descontos</a>';
-    echo '<a href="?page=art-image&tab=failures" class="nav-tab ' . ($active_tab === 'failures' ? 'nav-tab-active' : '') . '">Falhas</a>';
+    echo '<a href="?page=art-image&tab=failures" class="nav-tab ' . ($active_tab === 'failures' ? 'nav-tab-active' : '') . '">Falhas' . $failures_badge . '</a>';
     echo '</h2>';
 
     if ($active_tab === 'settings') {
@@ -117,7 +136,7 @@ function art_image_render_admin_page() {
                 echo '</td>';
                 echo '<td>' . esc_html($row->reason) . '</td>';
                 echo '<td>' . esc_html((string)$row->attempts) . '</td>';
-                echo '<td>' . esc_html((string)$row->last_failed_at) . '</td>';
+                echo '<td>' . esc_html(art_image_format_datetime($row->last_failed_at)) . '</td>';
                 echo '</tr>';
             }
             echo '</tbody></table>';
