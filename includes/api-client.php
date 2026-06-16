@@ -26,11 +26,13 @@ class ArtImageApiClient
     /**
      * Retorna cookies válidos para uso ou faz login se necessário.
      */
-    public function get_authenticated_cookies()
+    public function get_authenticated_cookies($force = false)
     {
-        $cookies = get_option('artimage_cookies');
-        if ($this->check_cookie_validity($cookies)) {
-            return $cookies;
+        if (!$force) {
+            $cookies = get_option('artimage_cookies');
+            if ($this->check_cookie_validity($cookies)) {
+                return $cookies;
+            }
         }
 
         return $this->login();
@@ -61,9 +63,75 @@ class ArtImageApiClient
     }
 
     /**
-     * Realiza o login em 3 etapas e retorna os cookies finais.
+     * Login serializado entre processos (anti login-stampede).
+     *
+     * Durante um sync via Action Scheduler vários processos rodam em paralelo e
+     * compartilham a MESMA option `artimage_cookies`. Se a sessão cai, todos tentam
+     * relogar ao mesmo tempo; como o artimage costuma invalidar a sessão anterior a
+     * cada login, logins concorrentes derrubam o cookie uns dos outros.
+     *
+     * Aqui usamos um lock nomeado do MySQL (GET_LOCK) para que apenas UM processo
+     * faça o login de verdade; os demais aguardam e reaproveitam a sessão recém
+     * renovada (re-checada dentro do lock), sem disparar novos logins.
      */
     private function login()
+    {
+        global $wpdb;
+        $lock_name = 'art_image_login';
+        $have_lock = false;
+
+        if (isset($wpdb) && is_object($wpdb)) {
+            $have_lock = ((int) $wpdb->get_var($wpdb->prepare("SELECT GET_LOCK(%s, %d)", $lock_name, 15))) === 1;
+        }
+
+        // Já com o lock (ou após o timeout de espera), confere se outro processo
+        // renovou a sessão enquanto aguardávamos — se sim, reaproveita.
+        // Lê direto do banco (bypassando o Redis Object Cache persistente, que poderia
+        // servir um valor velho e levar este processo a relogar à toa).
+        $existing = $this->get_fresh_cookies();
+        if ($this->check_cookie_validity($existing)) {
+            if ($have_lock) {
+                $wpdb->query($wpdb->prepare("SELECT RELEASE_LOCK(%s)", $lock_name));
+            }
+            return $existing;
+        }
+
+        $result = $this->do_login();
+
+        if ($have_lock) {
+            $wpdb->query($wpdb->prepare("SELECT RELEASE_LOCK(%s)", $lock_name));
+        }
+
+        return $result;
+    }
+
+    /**
+     * Lê a option artimage_cookies direto do banco, ignorando o object cache.
+     * Usado dentro do lock de login para garantir que enxergamos a sessão mais
+     * recente gravada por outro processo (o Redis persistente pode servir valor velho).
+     */
+    private function get_fresh_cookies()
+    {
+        global $wpdb;
+        if (!isset($wpdb) || !is_object($wpdb)) {
+            return get_option('artimage_cookies');
+        }
+        $value = $wpdb->get_var(
+            $wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", 'artimage_cookies')
+        );
+        if ($value === null) {
+            return false;
+        }
+        // refresca o cache deste processo para leituras posteriores ficarem coerentes
+        $cookies = maybe_unserialize($value);
+        wp_cache_set('artimage_cookies', $cookies, 'options');
+        return $cookies;
+    }
+
+    /**
+     * Realiza o login em 3 etapas e retorna os cookies finais.
+     */
+    private function do_login()
     {
         // Etapa 1: obter CSRF e cookies iniciais
         $step1 = wp_remote_get("{$this->base_login_url}/login", [
@@ -164,6 +232,60 @@ class ArtImageApiClient
     private function user_agent()
     {
         return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/108.0 Safari/537.36';
+    }
+
+    /**
+     * Detecta se o HTML retornado é a tela de login (sessão expirada/redirecionada)
+     * em vez de uma página autenticada. Toda página logada do artimage contém o link
+     * "login/logout"; a tela de login não. Esse é o mesmo sinal usado por
+     * check_cookie_validity(), de modo que uma subcategoria legitimamente vazia (mas
+     * autenticada) NÃO é confundida com sessão caída.
+     */
+    private function looks_logged_out($html)
+    {
+        return !is_string($html) || strpos($html, 'login/logout') === false;
+    }
+
+    /**
+     * GET autenticado com recuperação de sessão.
+     *
+     * Faz a requisição com os cookies atuais. Se o artimage redirecionar para a tela de
+     * login (sessão expirada ou rotacionada durante um sync longo/paralelo via Action
+     * Scheduler), força um novo login e repete a requisição UMA vez. Atualiza
+     * $cookie_header por referência para que as chamadas seguintes reaproveitem a sessão
+     * renovada.
+     *
+     * Sem isso, uma sessão caída faz o site devolver a página de login (sem nenhum
+     * link de produto), o scraper interpreta como "nenhum produto" e a subcategoria
+     * fica vazia silenciosamente.
+     */
+    private function authenticated_get($url, &$cookie_header)
+    {
+        $response = wp_remote_get($url, [
+            'headers' => ['Cookie' => $cookie_header],
+            'timeout' => $this->timeout,
+        ]);
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        if (!$this->looks_logged_out(wp_remote_retrieve_body($response))) {
+            return $response;
+        }
+
+        // Sessão caiu no meio da coleta: re-autentica (forçado) e tenta de novo.
+        art_image_log_import_error('API', 'Sessão expirada detectada (redirecionado ao login). Re-autenticando e repetindo: ' . $url);
+        $cookies = $this->get_authenticated_cookies(true);
+        if (!$cookies) {
+            return new WP_Error('art_image_reauth_failed', 'Falha ao re-autenticar durante coleta de ' . $url);
+        }
+        $cookie_header = $this->format_cookies($cookies);
+
+        return wp_remote_get($url, [
+            'headers' => ['Cookie' => $cookie_header],
+            'timeout' => $this->timeout,
+        ]);
     }
 
     // Busca as categorias no site
@@ -274,10 +396,7 @@ class ArtImageApiClient
         }
 
         // Pega a primeira página para descobrir o total de páginas
-        $response = wp_remote_get($base_url, [
-            'headers' => ['Cookie' => $cookie_header],
-            'timeout' => $this->timeout,
-        ]);
+        $response = $this->authenticated_get($base_url, $cookie_header);
 
         if (is_wp_error($response)) {
             art_image_log_import_error('API', 'Erro ao buscar produtos de ' . $base_url . ': ' . $response->get_error_message());
@@ -303,10 +422,7 @@ class ArtImageApiClient
                 $url = "https://artimage.com.br/produtos/{$subcategory_slug_or_url}?order=1&grid=mini&page={$page}";
             }
 
-            $response = wp_remote_get($url, [
-                'headers' => ['Cookie' => $cookie_header],
-                'timeout' => $this->timeout,
-            ]);
+            $response = $this->authenticated_get($url, $cookie_header);
 
             if (is_wp_error($response)) {
                 art_image_log_import_error('API', 'Erro ao buscar página ' . $page . ' de produtos: ' . $response->get_error_message());
@@ -359,10 +475,7 @@ class ArtImageApiClient
         $cookie_header = $this->format_cookies($cookies);
 
         // 1. Busca a página do produto
-        $response = wp_remote_get($product_url, [
-            'headers' => ['Cookie' => $cookie_header],
-            'timeout' => $this->timeout,
-        ]);
+        $response = $this->authenticated_get($product_url, $cookie_header);
         if (is_wp_error($response)) {
             art_image_log_import_error('API', 'Erro ao buscar detalhes do produto ' . $product_url . ': ' . $response->get_error_message());
             return [];
