@@ -820,7 +820,17 @@ class ArtImageImporter
                     if (isset($GLOBALS['artimage_sync_tracker'])) {
                         $GLOBALS['artimage_sync_tracker']->mark_product_imported($new_prod_id, $sku);
                     }
-                    
+
+                    // Composição: descobre/enfileira as "obras dessa composição" (dedup
+                    // por SKU + guard de expandir uma vez por grupo). Não interrompe o import.
+                    if (class_exists('ArtImageComposition')) {
+                        ArtImageComposition::handle_after_import($new_prod_id, $sku, [
+                            'link'                  => $p_data['link'] ?? '',
+                            'subcategory_id'        => (int) $item_to_process['subcategory_id'],
+                            'subcategory_parent_id' => (int) $item_to_process['subcategory_parent_id'],
+                        ], $details);
+                    }
+
                     // Log final do processamento
                     art_image_log_product_processing($sku, 'PROCESSAMENTO_CONCLUIDO', [
                         'produto_id' => $new_prod_id,
@@ -1575,6 +1585,16 @@ class ArtImageImporter
             // Marcar no tracker
             if ($artimage_sync_tracker) {
                 $artimage_sync_tracker->mark_product_imported($new_prod_id, $sku);
+            }
+
+            // Composição: descobre e enfileira as "obras dessa composição" (com dedup
+            // por SKU e guard de "expandir uma vez por grupo"). Nunca interrompe o import.
+            if (class_exists('ArtImageComposition')) {
+                ArtImageComposition::handle_after_import($new_prod_id, $sku, [
+                    'link'                  => $p_data['link'] ?? '',
+                    'subcategory_id'        => $subcategory_id,
+                    'subcategory_parent_id' => $subcategory_parent_id,
+                ], $details);
             }
 
             // Importou com sucesso E completo: remove o registro de falha deste SKU.

@@ -568,6 +568,20 @@ class ArtImageApiClient
             $details['price'] = trim($match[1]);
         }
 
+        // 11. Id de detalhe de origem (para agrupar composições)
+        if (preg_match('#/detalhe/(\d+)#', $product_url, $idm)) {
+            $details['detalhe_id'] = (int) $idm[1];
+        }
+
+        // 12. Obras da composição (produtos que aparecem só dentro deste produto).
+        // A descoberta sai de graça: o HTML do produto já foi baixado acima.
+        if (class_exists('ArtImageComposition')) {
+            $members = ArtImageComposition::parse_from_html($html);
+            if (!empty($members)) {
+                $details['composition_members'] = $members;
+            }
+        }
+
         return $details;
     }
 

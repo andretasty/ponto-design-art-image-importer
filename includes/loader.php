@@ -29,6 +29,10 @@ require_once ART_IMAGE_PLUGIN_DIR . 'includes/sync-manager.php';
 // processamento agora é único: Action Scheduler + cron de servidor
 // "wp action-scheduler run". Não carregar para evitar cron concorrente.
 
+// Carrega o módulo de composições (obras dentro de obras) e registra a exibição
+require_once ART_IMAGE_PLUGIN_DIR . 'includes/composition.php';
+ArtImageComposition::init();
+
 // Carrega o importador
 require_once ART_IMAGE_PLUGIN_DIR . 'includes/importer.php';
 
